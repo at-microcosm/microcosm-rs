@@ -1622,7 +1622,7 @@ impl StoreWriter<FjallBackground> for FjallWriter {
                 candidate_new_feed_lower_cursor = Some(feed_key.cursor());
             }
 
-            self.feeds.remove(&location_key_bytes)?;
+            self.records.remove(&location_key_bytes)?;
             self.feeds.remove(key_bytes)?;
             records_deleted += 1;
         }
