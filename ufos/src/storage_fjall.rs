@@ -148,6 +148,10 @@ pub struct FjallConfig {
     /// this is only meant for tests
     #[cfg(test)]
     pub temp: bool,
+    /// do major compaction on startup
+    ///
+    /// default is false. probably a good thing unless it's too slow.
+    pub major_compact: bool,
 }
 
 impl StorageWhatever<FjallReader, FjallWriter, FjallBackground, FjallConfig> for FjallStorage {
@@ -155,7 +159,7 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallBackground, FjallConfig> for
         path: impl AsRef<Path>,
         endpoint: String,
         force_endpoint: bool,
-        _config: FjallConfig,
+        config: FjallConfig,
     ) -> StorageResult<(FjallReader, FjallWriter, Option<Cursor>, SketchSecretPrefix)> {
         let keyspace = {
             let config = Config::new(path);
@@ -224,21 +228,27 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallBackground, FjallConfig> for
             sketch_secret
         };
 
-        for (partition, name) in [
-            (&global, "global"),
-            (&feeds, "feeds"),
-            (&records, "records"),
-            (&rollups, "rollups"),
-            (&queues, "queues"),
-        ] {
-            let size0 = partition.disk_space();
-            log::info!("beggining major compaction for {name} (original size: {size0})");
-            let t0 = Instant::now();
-            partition.major_compact().expect("compact better work 😬");
-            let dt = t0.elapsed();
-            let sizef = partition.disk_space();
-            let dsize = (sizef as i64) - (size0 as i64);
-            log::info!("completed compaction for {name} in {dt:?} (new size: {sizef}, {dsize})");
+        if config.major_compact {
+            for (partition, name) in [
+                (&global, "global"),
+                (&feeds, "feeds"),
+                (&records, "records"),
+                (&rollups, "rollups"),
+                (&queues, "queues"),
+            ] {
+                let size0 = partition.disk_space();
+                log::info!("beggining major compaction for {name} (original size: {size0})");
+                let t0 = Instant::now();
+                partition.major_compact().expect("compact better work 😬");
+                let dt = t0.elapsed();
+                let sizef = partition.disk_space();
+                let dsize = (sizef as i64) - (size0 as i64);
+                log::info!(
+                    "completed compaction for {name} in {dt:?} (new size: {sizef}, {dsize})"
+                );
+            }
+        } else {
+            log::info!("skipping major compaction on startup");
         }
 
         let reader = FjallReader {
@@ -1366,6 +1376,61 @@ impl FjallWriter {
         batch.commit()?;
         Ok((cursors_advanced, dirty_nsids))
     }
+    pub fn records_brute_gc_danger(&self) -> StorageResult<(usize, usize)> {
+        let (mut removed, mut retained) = (0, 0);
+        let mut to_retain = HashSet::<Vec<u8>>::new();
+
+        // Partition: 'feed'
+        //
+        //  - Per-collection list of record references ordered by jetstream cursor
+        //      - key: nullstr || u64 (collection nsid null-terminated, jetstream cursor)
+        //      - val: nullstr || nullstr || nullstr (did, rkey, rev. rev is mostly a sanity-check for now.)
+        //
+        //
+        // Partition: 'records'
+        //
+        //  - Actual records by their atproto location
+        //      - key: nullstr || nullstr || nullstr (did, collection, rkey)
+        //      - val: u64 || bool || nullstr || rawval (js_cursor, is_update, rev, actual record)
+        //
+        //
+
+        log::warn!("loading *all* record keys from feed into memory (yikes)");
+        let t0 = Instant::now();
+        for (i, kv) in self.feeds.iter().enumerate() {
+            if i > 0 && (i % 100000 == 0) {
+                log::info!("{i}...");
+            }
+            let (key_bytes, val_bytes) = kv?;
+            let key = db_complete::<NsidRecordFeedKey>(&key_bytes)?;
+            let val = db_complete::<NsidRecordFeedVal>(&val_bytes)?;
+            let record_key: RecordLocationKey = (&key, &val).into();
+            to_retain.insert(record_key.to_db_bytes()?);
+        }
+        log::warn!(
+            "loaded. wow. took {:?}, found {} keys",
+            t0.elapsed(),
+            to_retain.len()
+        );
+
+        log::warn!("warmup OVER, iterating some billions of record keys now");
+        let t0 = Instant::now();
+        for (i, k) in self.records.keys().enumerate() {
+            let key_bytes = k?;
+            if to_retain.contains(&*key_bytes) {
+                retained += 1;
+            } else {
+                self.records.remove(key_bytes)?;
+                removed += 1;
+            }
+            if i > 0 && (i % 10_000_000) == 0 {
+                log::info!("{i}: {retained} retained, {removed} removed.");
+            }
+        }
+        log::warn!("whew! that took {:?}", t0.elapsed());
+
+        Ok((removed, retained))
+    }
 }
 
 impl StoreWriter<FjallBackground> for FjallWriter {
@@ -1817,7 +1882,10 @@ mod tests {
             tempfile::tempdir().unwrap(),
             "offline test (no real jetstream endpoint)".to_string(),
             false,
-            FjallConfig { temp: true },
+            FjallConfig {
+                temp: true,
+                ..Default::default()
+            },
         )
         .unwrap();
         (read, write)

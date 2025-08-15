@@ -9,7 +9,7 @@ use ufos::consumer;
 use ufos::file_consumer;
 use ufos::server;
 use ufos::storage::{StorageWhatever, StoreBackground, StoreReader, StoreWriter};
-use ufos::storage_fjall::FjallStorage;
+use ufos::storage_fjall::{FjallConfig, FjallStorage};
 use ufos::store_types::SketchSecretPrefix;
 use ufos::{nice_duration, ConsumerInfo};
 
@@ -55,6 +55,12 @@ struct Args {
     /// DEBUG: interpret jetstream as a file fixture
     #[arg(long, action)]
     jetstream_fixture: bool,
+    /// HOPEFULLY only needed once
+    ///
+    /// brute-force garbage-collect all dangling records because we weren't deleting
+    /// them before at all (oops)
+    #[arg(long, action)]
+    fjall_records_gc: bool,
 }
 
 #[tokio::main]
@@ -67,8 +73,22 @@ async fn main() -> anyhow::Result<()> {
         args.data.clone(),
         jetstream,
         args.jetstream_force,
-        Default::default(),
+        FjallConfig {
+            major_compact: !args.fjall_records_gc,
+        },
     )?;
+
+    if args.fjall_records_gc {
+        log::info!("beginning brute-force records gc");
+        let t0 = std::time::Instant::now();
+        let (n, m) = write_store.records_brute_gc_danger()?;
+        let dt = t0.elapsed();
+        log::info!(
+            "completed brute-force records gc in {dt:?}, removed {n} and retained {m} records."
+        );
+        return Ok(());
+    }
+
     go(args, read_store, write_store, cursor, sketch_secret).await?;
     Ok(())
 }
