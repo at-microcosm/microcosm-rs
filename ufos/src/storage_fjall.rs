@@ -224,6 +224,23 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallBackground, FjallConfig> for
             sketch_secret
         };
 
+        for (partition, name) in [
+            (&global, "global"),
+            (&feeds, "feeds"),
+            (&records, "records"),
+            (&rollups, "rollups"),
+            (&queues, "queues"),
+        ] {
+            let size0 = partition.disk_space();
+            log::info!("beggining major compaction for {name} (original size: {size0})");
+            let t0 = Instant::now();
+            partition.major_compact().expect("compact better work 😬");
+            let dt = t0.elapsed();
+            let sizef = partition.disk_space();
+            let dsize = (sizef as i64) - (size0 as i64);
+            log::info!("completed compaction for {name} in {dt:?} (new size: {sizef}, {dsize})");
+        }
+
         let reader = FjallReader {
             keyspace: keyspace.clone(),
             global: global.clone(),
