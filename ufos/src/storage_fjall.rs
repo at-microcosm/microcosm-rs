@@ -1398,7 +1398,7 @@ impl FjallWriter {
         log::warn!("loading *all* record keys from feed into memory (yikes)");
         let t0 = Instant::now();
         for (i, kv) in self.feeds.iter().enumerate() {
-            if i > 0 && (i % 100000 == 0) {
+            if i > 0 && (i % 10_000_000 == 0) {
                 log::info!("{i}...");
             }
             let (key_bytes, val_bytes) = kv?;
@@ -1423,7 +1423,7 @@ impl FjallWriter {
                 self.records.remove(key_bytes)?;
                 removed += 1;
             }
-            if i > 0 && (i % 10_000_000) == 0 {
+            if i > 0 && (i % 100_000_000) == 0 {
                 log::info!("{i}: {retained} retained, {removed} removed.");
             }
         }
