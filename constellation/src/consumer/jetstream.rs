@@ -226,13 +226,20 @@ pub fn consume_jetstream(
                             println!("jetstream closed the websocket cleanly.");
                             break;
                         }
-                        r => eprintln!("jetstream: close result after error: {r:?}"),
+                        Err(_) => {
+                            counter!("jetstream_read_fail", "url" => stream.clone(), "reason" => "dirty close").increment(1);
+                            println!("jetstream failed to close the websocket cleanly.");
+                            break;
+                        }
+                        Ok(r) => {
+                            eprintln!("jetstream: close result after error: {r:?}");
+                            counter!("jetstream_read_fail", "url" => stream.clone(), "reason" => "read error")
+                                .increment(1);
+                            // if we didn't immediately get ConnectionClosed, we should keep polling read
+                            // until we get it.
+                            continue;
+                        }
                     }
-                    counter!("jetstream_read_fail", "url" => stream.clone(), "reason" => "read error")
-                        .increment(1);
-                    // if we didn't immediately get ConnectionClosed, we should keep polling read
-                    // until we get it.
-                    continue;
                 }
             };
 
