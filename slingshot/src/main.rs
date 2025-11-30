@@ -49,6 +49,12 @@ struct Args {
     /// an web address to send healtcheck pings to every ~51s or so
     #[arg(long)]
     healthcheck: Option<String>,
+    /// slingshot server's listen address
+    #[arg(long, default_value = "0.0.0.0:8080")]
+    bind: std::net::SocketAddr,
+    /// metrics server's listen address
+    #[arg(long, default_value = "0.0.0.0:8765")]
+    bind_metrics: std::net::SocketAddr,
 }
 
 #[tokio::main]
@@ -62,10 +68,10 @@ async fn main() -> Result<(), String> {
 
     let args = Args::parse();
 
-    if let Err(e) = install_metrics_server() {
+    if let Err(e) = install_metrics_server(args.bind_metrics) {
         log::error!("failed to install metrics server: {e:?}");
     } else {
-        log::info!("metrics listening at http://0.0.0.0:8765");
+        log::info!("metrics listening at http://{}", args.bind_metrics);
     }
 
     std::fs::create_dir_all(&args.cache_dir).map_err(|e| {
@@ -104,6 +110,7 @@ async fn main() -> Result<(), String> {
 
     let server_shutdown = shutdown.clone();
     let server_cache_handle = cache.clone();
+    let bind = args.bind;
     tasks.spawn(async move {
         serve(
             server_cache_handle,
@@ -113,6 +120,7 @@ async fn main() -> Result<(), String> {
             args.acme_contact,
             args.certs,
             server_shutdown,
+            bind,
         )
         .await?;
         Ok(())
@@ -172,23 +180,18 @@ async fn main() -> Result<(), String> {
     Ok(())
 }
 
-fn install_metrics_server() -> Result<(), metrics_exporter_prometheus::BuildError> {
+fn install_metrics_server(bind_metrics: std::net::SocketAddr) -> Result<(), metrics_exporter_prometheus::BuildError> {
     log::info!("installing metrics server...");
-    let host = [0, 0, 0, 0];
-    let port = 8765;
     PrometheusBuilder::new()
         .set_quantiles(&[0.5, 0.9, 0.99, 1.0])?
         .set_bucket_duration(std::time::Duration::from_secs(300))?
         .set_bucket_count(std::num::NonZero::new(12).unwrap()) // count * duration = 60 mins. stuff doesn't happen that fast here.
         .set_enable_unit_suffix(false) // this seemed buggy for constellation (sometimes wouldn't engage)
-        .with_http_listener((host, port))
+        .with_http_listener(bind_metrics)
         .install()?;
     log::info!(
-        "metrics server installed! listening on http://{}.{}.{}.{}:{port}",
-        host[0],
-        host[1],
-        host[2],
-        host[3]
+        "metrics server installed! listening on http://{}",
+        bind_metrics
     );
     Ok(())
 }

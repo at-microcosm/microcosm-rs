@@ -716,7 +716,7 @@ async fn search_collections(
     .await
 }
 
-pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
+pub async fn serve(storage: impl StoreReader + 'static, bind: std::net::SocketAddr) -> Result<(), String> {
     describe_metrics();
     let log = ConfigLogging::StderrTerminal {
         level: ConfigLoggingLevel::Warn,
@@ -758,7 +758,7 @@ pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
 
     ServerBuilder::new(api, context, log)
         .config(ConfigDropshot {
-            bind_address: "0.0.0.0:9999".parse().unwrap(),
+            bind_address: bind,
             ..Default::default()
         })
         .start()

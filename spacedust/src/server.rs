@@ -29,6 +29,7 @@ pub async fn serve(
     b: broadcast::Sender<Arc<ClientMessage>>,
     d: broadcast::Sender<Arc<ClientMessage>>,
     shutdown: CancellationToken,
+    bind: std::net::SocketAddr,
 ) -> Result<(), ServerError> {
     let config_logging = ConfigLogging::StderrTerminal {
         level: ConfigLoggingLevel::Info,
@@ -72,7 +73,7 @@ pub async fn serve(
 
     let server = ServerBuilder::new(api, ctx, log)
         .config(ConfigDropshot {
-            bind_address: "0.0.0.0:9998".parse().unwrap(),
+            bind_address: bind,
             ..Default::default()
         })
         .start()?;

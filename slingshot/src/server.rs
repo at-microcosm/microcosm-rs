@@ -695,6 +695,7 @@ pub async fn serve(
     acme_contact: Option<String>,
     certs: Option<PathBuf>,
     shutdown: CancellationToken,
+    bind: std::net::SocketAddr,
 ) -> Result<(), ServerError> {
     let repo = Arc::new(repo);
     let api_service = OpenApiService::new(
@@ -752,7 +753,7 @@ pub async fn serve(
         )
         .await
     } else {
-        run(TcpListener::bind("127.0.0.1:3000"), app, shutdown).await
+        run(TcpListener::bind(bind.to_string()), app, shutdown).await
     }
 }
 

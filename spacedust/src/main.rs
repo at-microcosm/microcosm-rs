@@ -23,6 +23,12 @@ struct Args {
     /// reduces CPU at the expense of more ingress bandwidth
     #[arg(long, action)]
     jetstream_no_zstd: bool,
+    /// spacedust server's listen address
+    #[arg(long, default_value = "0.0.0.0:9998")]
+    bind: std::net::SocketAddr,
+    /// metrics server's listen address
+    #[arg(long, default_value = "0.0.0.0:8765")]
+    bind_metrics: std::net::SocketAddr,
 }
 
 #[tokio::main]
@@ -60,15 +66,16 @@ async fn main() -> Result<(), String> {
 
     let args = Args::parse();
 
-    if let Err(e) = install_metrics_server() {
+    if let Err(e) = install_metrics_server(args.bind_metrics) {
         log::error!("failed to install metrics server: {e:?}");
     };
 
     let mut tasks: tokio::task::JoinSet<Result<(), MainTaskError>> = tokio::task::JoinSet::new();
 
     let server_shutdown = shutdown.clone();
+    let bind = args.bind;
     tasks.spawn(async move {
-        server::serve(b, d, server_shutdown).await?;
+        server::serve(b, d, server_shutdown, bind).await?;
         Ok(())
     });
 
@@ -122,23 +129,18 @@ async fn main() -> Result<(), String> {
     Ok(())
 }
 
-fn install_metrics_server() -> Result<(), metrics_exporter_prometheus::BuildError> {
+fn install_metrics_server(bind_metrics: std::net::SocketAddr) -> Result<(), metrics_exporter_prometheus::BuildError> {
     log::info!("installing metrics server...");
-    let host = [0, 0, 0, 0];
-    let port = 8765;
     PrometheusBuilder::new()
         .set_quantiles(&[0.5, 0.9, 0.99, 1.0])?
         .set_bucket_duration(std::time::Duration::from_secs(300))?
         .set_bucket_count(std::num::NonZero::new(12).unwrap()) // count * duration = 60 mins. stuff doesn't happen that fast here.
         .set_enable_unit_suffix(false) // this seemed buggy for constellation (sometimes wouldn't engage)
-        .with_http_listener((host, port))
+        .with_http_listener(bind_metrics)
         .install()?;
     log::info!(
-        "metrics server installed! listening on http://{}.{}.{}.{}:{port}",
-        host[0],
-        host[1],
-        host[2],
-        host[3]
+        "metrics server installed! listening on http://{}",
+        bind_metrics
     );
     Ok(())
 }
