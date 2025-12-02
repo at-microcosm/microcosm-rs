@@ -20,10 +20,10 @@ use crate::{
 };
 use async_trait::async_trait;
 use fjall::{
-    Batch as FjallBatch, Config, Keyspace, PartitionCreateOptions, PartitionHandle, Snapshot,
+    AbstractTree, Database, Keyspace, KeyspaceCreateOptions, Readable, Snapshot,
+    WriteBatch as FjallBatch,
 };
 use jetstream::events::Cursor;
-use lsm_tree::AbstractTree;
 use metrics::{
     counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram, Unit,
 };
@@ -157,8 +157,8 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallBackground, FjallConfig> for
         force_endpoint: bool,
         _config: FjallConfig,
     ) -> StorageResult<(FjallReader, FjallWriter, Option<Cursor>, SketchSecretPrefix)> {
-        let keyspace = {
-            let config = Config::new(path);
+        let db = {
+            let config = Database::builder(path);
 
             // #[cfg(not(test))]
             // let config = config.fsync_ms(Some(4_000));
@@ -166,11 +166,11 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallBackground, FjallConfig> for
             config.open()?
         };
 
-        let global = keyspace.open_partition("global", PartitionCreateOptions::default())?;
-        let feeds = keyspace.open_partition("feeds", PartitionCreateOptions::default())?;
-        let records = keyspace.open_partition("records", PartitionCreateOptions::default())?;
-        let rollups = keyspace.open_partition("rollups", PartitionCreateOptions::default())?;
-        let queues = keyspace.open_partition("queues", PartitionCreateOptions::default())?;
+        let global = db.keyspace("global", KeyspaceCreateOptions::default)?;
+        let feeds = db.keyspace("feeds", KeyspaceCreateOptions::default)?;
+        let records = db.keyspace("records", KeyspaceCreateOptions::default)?;
+        let rollups = db.keyspace("rollups", KeyspaceCreateOptions::default)?;
+        let queues = db.keyspace("queues", KeyspaceCreateOptions::default)?;
 
         let js_cursor = get_static_neu::<JetstreamCursorKey, JetstreamCursorValue>(&global)?;
 
@@ -225,7 +225,7 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallBackground, FjallConfig> for
         };
 
         let reader = FjallReader {
-            keyspace: keyspace.clone(),
+            db: db.clone(),
             global: global.clone(),
             feeds: feeds.clone(),
             records: records.clone(),
@@ -235,7 +235,7 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallBackground, FjallConfig> for
         reader.describe_metrics();
         let writer = FjallWriter {
             bg_taken: Arc::new(AtomicBool::new(false)),
-            keyspace,
+            keyspace: db,
             global,
             feeds,
             records,
@@ -247,29 +247,29 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallBackground, FjallConfig> for
     }
 }
 
-type FjallRKV = fjall::Result<(fjall::Slice, fjall::Slice)>;
+type FjallRKV = fjall::Guard;
 
 #[derive(Clone)]
 pub struct FjallReader {
-    keyspace: Keyspace,
-    global: PartitionHandle,
-    feeds: PartitionHandle,
-    records: PartitionHandle,
-    rollups: PartitionHandle,
-    queues: PartitionHandle,
+    db: Database,
+    global: Keyspace,
+    feeds: Keyspace,
+    records: Keyspace,
+    rollups: Keyspace,
+    queues: Keyspace,
 }
 
 /// An iterator that knows how to skip over deleted/invalidated records
 struct RecordIterator {
     db_iter: Box<dyn Iterator<Item = FjallRKV>>,
-    records: PartitionHandle,
+    records: Keyspace,
     limit: usize,
     fetched: usize,
 }
 impl RecordIterator {
     pub fn new(
-        feeds: &PartitionHandle,
-        records: PartitionHandle,
+        feeds: &Keyspace,
+        records: Keyspace,
         collection: &Nsid,
         limit: usize,
     ) -> StorageResult<Self> {
@@ -283,7 +283,7 @@ impl RecordIterator {
         })
     }
     fn get_record(&self, db_next: FjallRKV) -> StorageResult<Option<UFOsRecord>> {
-        let (key_bytes, val_bytes) = db_next?;
+        let (key_bytes, val_bytes) = db_next.into_inner()?;
         let feed_key = db_complete::<NsidRecordFeedKey>(&key_bytes)?;
         let feed_val = db_complete::<NsidRecordFeedVal>(&val_bytes)?;
         let location_key: RecordLocationKey = (&feed_key, &feed_val).into();
@@ -344,37 +344,44 @@ impl Iterator for RecordIterator {
 type GetCounts = Box<dyn FnOnce() -> StorageResult<CountsValue>>;
 type GetByterCounts = StorageResult<(Nsid, GetCounts)>;
 type NsidCounter = Box<dyn Iterator<Item = GetByterCounts>>;
+
 fn get_lexi_iter<T: WithCollection + DbBytes + 'static>(
     snapshot: &Snapshot,
+    keyspace: &Keyspace,
     start: Bound<Vec<u8>>,
     end: Bound<Vec<u8>>,
 ) -> StorageResult<NsidCounter> {
-    Ok(Box::new(snapshot.range((start, end)).map(|kv| {
-        let (k_bytes, v_bytes) = kv?;
+    Ok(Box::new(snapshot.range(keyspace, (start, end)).map(|kv| {
+        let (k_bytes, v_bytes) = kv.into_inner()?;
         let key = db_complete::<T>(&k_bytes)?;
         let nsid = key.collection().clone();
         let get_counts: GetCounts = Box::new(move || Ok(db_complete::<CountsValue>(&v_bytes)?));
         Ok((nsid, get_counts))
     })))
 }
+
 type GetRollupKey = Arc<dyn Fn(&Nsid) -> EncodingResult<Vec<u8>>>;
+
 fn get_lookup_iter<T: WithCollection + WithRank + DbBytes + 'static>(
-    snapshot: lsm_tree::Snapshot,
+    snapshot: Snapshot,
+    keyspace: Keyspace,
     start: Bound<Vec<u8>>,
     end: Bound<Vec<u8>>,
     get_rollup_key: GetRollupKey,
 ) -> StorageResult<NsidCounter> {
-    Ok(Box::new(snapshot.range((start, end)).rev().map(
+    Ok(Box::new(snapshot.range(&keyspace, (start, end)).rev().map(
         move |kv| {
-            let (k_bytes, _) = kv?;
+            let (k_bytes, _) = kv.into_inner()?;
             let key = db_complete::<T>(&k_bytes)?;
             let nsid = key.collection().clone();
             let get_counts: GetCounts = Box::new({
                 let nsid = nsid.clone();
                 let snapshot = snapshot.clone();
+                let keyspace = keyspace.clone();
                 let get_rollup_key = get_rollup_key.clone();
+
                 move || {
-                    let db_count_bytes = snapshot.get(get_rollup_key(&nsid)?)?.expect(
+                    let db_count_bytes = snapshot.get(&keyspace,get_rollup_key(&nsid)?)?.expect(
                     "integrity: all-time rank rollup must have corresponding all-time count rollup",
                 );
                     Ok(db_complete::<CountsValue>(&db_count_bytes)?)
@@ -417,36 +424,44 @@ impl FjallReader {
                 .map(|c| c.to_raw_u64());
 
         Ok(serde_json::json!({
-            "keyspace_disk_space": self.keyspace.disk_space(),
-            "keyspace_journal_count": self.keyspace.journal_count(),
-            "keyspace_sequence": self.keyspace.instant(),
+            "keyspace_disk_space": self.db.disk_space()?,
+            "keyspace_journal_count": self.db.journal_count(),
+            "keyspace_sequence": self.db.seqno(),
             "rollup_cursor": rollup_cursor,
         }))
     }
 
     fn get_consumer_info(&self) -> StorageResult<ConsumerInfo> {
-        let global = self.global.snapshot();
+        // let global = self.global.snapshot();
+        let snapshot = self.db.snapshot();
 
-        let endpoint =
-            get_snapshot_static_neu::<JetstreamEndpointKey, JetstreamEndpointValue>(&global)?
+        let endpoint = get_snapshot_static_neu::<JetstreamEndpointKey, JetstreamEndpointValue>(
+            &snapshot,
+            &self.global,
+        )?
+        .ok_or(StorageError::BadStateError(
+            "Could not find jetstream endpoint".to_string(),
+        ))?
+        .0;
+
+        let started_at =
+            get_snapshot_static_neu::<TakeoffKey, TakeoffValue>(&snapshot, &self.global)?
                 .ok_or(StorageError::BadStateError(
-                    "Could not find jetstream endpoint".to_string(),
+                    "Could not find jetstream takeoff time".to_string(),
                 ))?
-                .0;
+                .to_raw_u64();
 
-        let started_at = get_snapshot_static_neu::<TakeoffKey, TakeoffValue>(&global)?
-            .ok_or(StorageError::BadStateError(
-                "Could not find jetstream takeoff time".to_string(),
-            ))?
-            .to_raw_u64();
+        let latest_cursor = get_snapshot_static_neu::<JetstreamCursorKey, JetstreamCursorValue>(
+            &snapshot,
+            &self.global,
+        )?
+        .map(|c| c.to_raw_u64());
 
-        let latest_cursor =
-            get_snapshot_static_neu::<JetstreamCursorKey, JetstreamCursorValue>(&global)?
-                .map(|c| c.to_raw_u64());
-
-        let rollup_cursor =
-            get_snapshot_static_neu::<NewRollupCursorKey, NewRollupCursorValue>(&global)?
-                .map(|c| c.to_raw_u64());
+        let rollup_cursor = get_snapshot_static_neu::<NewRollupCursorKey, NewRollupCursorValue>(
+            &snapshot,
+            &self.global,
+        )?
+        .map(|c| c.to_raw_u64());
 
         Ok(ConsumerInfo::Jetstream {
             endpoint,
@@ -456,11 +471,16 @@ impl FjallReader {
         })
     }
 
-    fn get_earliest_hour(&self, rollups: Option<&Snapshot>) -> StorageResult<HourTruncatedCursor> {
+    fn get_earliest_hour(
+        &self,
+        rollups: Option<&Snapshot>,
+        keyspace: &Keyspace,
+    ) -> StorageResult<HourTruncatedCursor> {
         let cursor = rollups
-            .unwrap_or(&self.rollups.snapshot())
-            .prefix(HourlyRollupStaticPrefix::default().to_db_bytes()?)
+            .unwrap_or(&self.db.snapshot())
+            .prefix(keyspace, HourlyRollupStaticPrefix::default().to_db_bytes()?)
             .next()
+            .map(fjall::Guard::into_inner)
             .transpose()?
             .map(|(key_bytes, _)| db_complete::<HourlyRollupKey>(&key_bytes))
             .transpose()?
@@ -471,7 +491,8 @@ impl FjallReader {
 
     fn get_lexi_collections(
         &self,
-        snapshot: Snapshot,
+        snapshot: &Snapshot,
+        keyspace: &Keyspace,
         limit: usize,
         cursor: Option<Vec<u8>>,
         buckets: Vec<CursorBucket>,
@@ -486,7 +507,7 @@ impl FjallReader {
                         .map(|nsid| HourlyRollupKey::after_nsid(*t, nsid))
                         .unwrap_or_else(|| HourlyRollupKey::start(*t))?;
                     let end = HourlyRollupKey::end(*t)?;
-                    get_lexi_iter::<HourlyRollupKey>(&snapshot, start, end)?
+                    get_lexi_iter::<HourlyRollupKey>(snapshot, &keyspace, start, end)?
                 }
                 CursorBucket::Week(t) => {
                     let start = cursor_nsid
@@ -494,7 +515,7 @@ impl FjallReader {
                         .map(|nsid| WeeklyRollupKey::after_nsid(*t, nsid))
                         .unwrap_or_else(|| WeeklyRollupKey::start(*t))?;
                     let end = WeeklyRollupKey::end(*t)?;
-                    get_lexi_iter::<WeeklyRollupKey>(&snapshot, start, end)?
+                    get_lexi_iter::<WeeklyRollupKey>(snapshot, &keyspace, start, end)?
                 }
                 CursorBucket::AllTime => {
                     let start = cursor_nsid
@@ -502,7 +523,7 @@ impl FjallReader {
                         .map(AllTimeRollupKey::after_nsid)
                         .unwrap_or_else(AllTimeRollupKey::start)?;
                     let end = AllTimeRollupKey::end()?;
-                    get_lexi_iter::<AllTimeRollupKey>(&snapshot, start, end)?
+                    get_lexi_iter::<AllTimeRollupKey>(snapshot, &keyspace, start, end)?
                 }
             };
             iters.push(it.peekable());
@@ -547,7 +568,8 @@ impl FjallReader {
 
     fn get_ordered_collections(
         &self,
-        snapshot: Snapshot,
+        snapshot: &Snapshot,
+        keyspace: &Keyspace,
         limit: usize,
         order: OrderCollectionsBy,
         buckets: Vec<CursorBucket>,
@@ -559,6 +581,7 @@ impl FjallReader {
                 (OrderCollectionsBy::RecordsCreated, CursorBucket::Hour(t)) => {
                     get_lookup_iter::<HourlyRecordsKey>(
                         snapshot.clone(),
+                        keyspace.clone(),
                         HourlyRecordsKey::start(t)?,
                         HourlyRecordsKey::end(t)?,
                         Arc::new({
@@ -569,6 +592,7 @@ impl FjallReader {
                 (OrderCollectionsBy::DidsEstimate, CursorBucket::Hour(t)) => {
                     get_lookup_iter::<HourlyDidsKey>(
                         snapshot.clone(),
+                        keyspace.clone(),
                         HourlyDidsKey::start(t)?,
                         HourlyDidsKey::end(t)?,
                         Arc::new({
@@ -579,6 +603,7 @@ impl FjallReader {
                 (OrderCollectionsBy::RecordsCreated, CursorBucket::Week(t)) => {
                     get_lookup_iter::<WeeklyRecordsKey>(
                         snapshot.clone(),
+                        keyspace.clone(),
                         WeeklyRecordsKey::start(t)?,
                         WeeklyRecordsKey::end(t)?,
                         Arc::new({
@@ -589,6 +614,7 @@ impl FjallReader {
                 (OrderCollectionsBy::DidsEstimate, CursorBucket::Week(t)) => {
                     get_lookup_iter::<WeeklyDidsKey>(
                         snapshot.clone(),
+                        keyspace.clone(),
                         WeeklyDidsKey::start(t)?,
                         WeeklyDidsKey::end(t)?,
                         Arc::new({
@@ -599,6 +625,7 @@ impl FjallReader {
                 (OrderCollectionsBy::RecordsCreated, CursorBucket::AllTime) => {
                     get_lookup_iter::<AllTimeRecordsKey>(
                         snapshot.clone(),
+                        keyspace.clone(),
                         AllTimeRecordsKey::start()?,
                         AllTimeRecordsKey::end()?,
                         Arc::new(|collection| AllTimeRollupKey::new(collection).to_db_bytes()),
@@ -607,6 +634,7 @@ impl FjallReader {
                 (OrderCollectionsBy::DidsEstimate, CursorBucket::AllTime) => {
                     get_lookup_iter::<AllTimeDidsKey>(
                         snapshot.clone(),
+                        keyspace.clone(),
                         AllTimeDidsKey::start()?,
                         AllTimeDidsKey::end()?,
                         Arc::new(|collection| AllTimeRollupKey::new(collection).to_db_bytes()),
@@ -656,11 +684,12 @@ impl FjallReader {
         since: Option<HourTruncatedCursor>,
         until: Option<HourTruncatedCursor>,
     ) -> StorageResult<(Vec<NsidCount>, Option<Vec<u8>>)> {
-        let snapshot = self.rollups.snapshot();
+        let snapshot = self.db.snapshot();
+
         let buckets = if let (None, None) = (since, until) {
             vec![CursorBucket::AllTime]
         } else {
-            let mut lower = self.get_earliest_hour(Some(&snapshot))?;
+            let mut lower = self.get_earliest_hour(Some(&snapshot), &self.rollups)?;
             if let Some(specified) = since {
                 if specified > lower {
                     lower = specified;
@@ -671,10 +700,10 @@ impl FjallReader {
         };
         match order {
             OrderCollectionsBy::Lexi { cursor } => {
-                self.get_lexi_collections(snapshot, limit, cursor, buckets)
+                self.get_lexi_collections(&snapshot, &self.rollups, limit, cursor, buckets)
             }
             _ => Ok((
-                self.get_ordered_collections(snapshot, limit, order, buckets)?,
+                self.get_ordered_collections(&snapshot, &self.rollups, limit, order, buckets)?,
                 None,
             )),
         }
@@ -682,7 +711,8 @@ impl FjallReader {
 
     fn get_lexi_prefix(
         &self,
-        snapshot: Snapshot,
+        snapshot: &Snapshot,
+        keyspace: &Keyspace,
         prefix: NsidPrefix,
         limit: usize,
         cursor: Option<Vec<u8>>,
@@ -708,7 +738,7 @@ impl FjallReader {
                         .map(|child| HourlyRollupKey::after_nsid_prefix(*t, child))
                         .unwrap_or_else(|| HourlyRollupKey::after_nsid_prefix(*t, &prefix_sub))?;
                     let end = HourlyRollupKey::nsid_prefix_end(*t, &prefix_sub)?;
-                    get_lexi_iter::<HourlyRollupKey>(&snapshot, start, end)?
+                    get_lexi_iter::<HourlyRollupKey>(snapshot, &keyspace, start, end)?
                 }
                 CursorBucket::Week(t) => {
                     let start = cursor_child
@@ -716,7 +746,7 @@ impl FjallReader {
                         .map(|child| WeeklyRollupKey::after_nsid_prefix(*t, child))
                         .unwrap_or_else(|| WeeklyRollupKey::after_nsid_prefix(*t, &prefix_sub))?;
                     let end = WeeklyRollupKey::nsid_prefix_end(*t, &prefix_sub)?;
-                    get_lexi_iter::<WeeklyRollupKey>(&snapshot, start, end)?
+                    get_lexi_iter::<WeeklyRollupKey>(snapshot, &keyspace, start, end)?
                 }
                 CursorBucket::AllTime => {
                     let start = cursor_child
@@ -724,7 +754,7 @@ impl FjallReader {
                         .map(|child| AllTimeRollupKey::after_nsid_prefix(child))
                         .unwrap_or_else(|| AllTimeRollupKey::after_nsid_prefix(&prefix_sub))?;
                     let end = AllTimeRollupKey::nsid_prefix_end(&prefix_sub)?;
-                    get_lexi_iter::<AllTimeRollupKey>(&snapshot, start, end)?
+                    get_lexi_iter::<AllTimeRollupKey>(snapshot, &keyspace, start, end)?
                 }
             };
             iters.push(it);
@@ -839,11 +869,12 @@ impl FjallReader {
         since: Option<HourTruncatedCursor>,
         until: Option<HourTruncatedCursor>,
     ) -> StorageResult<(JustCount, Vec<PrefixChild>, Option<Vec<u8>>)> {
-        let snapshot = self.rollups.snapshot();
+        let snapshot = self.db.snapshot();
+
         let buckets = if let (None, None) = (since, until) {
             vec![CursorBucket::AllTime]
         } else {
-            let mut lower = self.get_earliest_hour(Some(&snapshot))?;
+            let mut lower = self.get_earliest_hour(Some(&snapshot), &self.rollups)?;
             if let Some(specified) = since {
                 if specified > lower {
                     lower = specified;
@@ -852,9 +883,10 @@ impl FjallReader {
             let upper = until.unwrap_or_else(|| Cursor::at(SystemTime::now()).into());
             CursorBucket::buckets_spanning(lower, upper)
         };
+
         match order {
             OrderCollectionsBy::Lexi { cursor } => {
-                self.get_lexi_prefix(snapshot, prefix, limit, cursor, buckets)
+                self.get_lexi_prefix(&snapshot, &self.rollups, prefix, limit, cursor, buckets)
             }
             _ => todo!(),
         }
@@ -881,12 +913,15 @@ impl FjallReader {
         };
         let n_hours = (dt.as_micros() as u64) / HOUR_IN_MICROS;
         let mut counts_by_hour = Vec::with_capacity(n_hours as usize);
-        let snapshot = self.rollups.snapshot();
+        let snapshot = self.db.snapshot();
         for hour in (0..n_hours).map(|i| since.nth_next(i)) {
             let mut counts = Vec::with_capacity(collections.len());
             for nsid in &collections {
                 let count = snapshot
-                    .get(&HourlyRollupKey::new(hour, nsid).to_db_bytes()?)?
+                    .get(
+                        &self.rollups,
+                        &HourlyRollupKey::new(hour, nsid).to_db_bytes()?,
+                    )?
                     .as_deref()
                     .map(db_complete::<CountsValue>)
                     .transpose()?
@@ -926,9 +961,6 @@ impl FjallReader {
         since: HourTruncatedCursor,
         until: Option<HourTruncatedCursor>,
     ) -> StorageResult<JustCount> {
-        // grab snapshots in case rollups happen while we're working
-        let rollups = self.rollups.snapshot();
-
         let until = until.unwrap_or_else(|| Cursor::at(SystemTime::now()).into());
         let buckets = CursorBucket::buckets_spanning(since, until);
         let mut total_counts = CountsValue::default();
@@ -939,7 +971,8 @@ impl FjallReader {
                 CursorBucket::Week(t) => WeeklyRollupKey::new(t, collection).to_db_bytes()?,
                 CursorBucket::AllTime => unreachable!(), // TODO: fall back on this if the time span spans the whole dataset?
             };
-            let count = rollups
+            let count = self
+                .rollups
                 .get(&key)?
                 .as_deref()
                 .map(db_complete::<CountsValue>)
@@ -1006,7 +1039,7 @@ impl FjallReader {
         let mut matches = Vec::new();
         let limit = 16; // TODO: param
         for kv in self.rollups.range((start, end)) {
-            let (key_bytes, val_bytes) = kv?;
+            let (key_bytes, val_bytes) = kv.into_inner()?;
             let key = db_complete::<AllTimeRollupKey>(&key_bytes)?;
             let nsid = key.collection();
             for term in &terms {
@@ -1041,9 +1074,9 @@ impl StoreReader for FjallReader {
             .set(self.rollups.tree.l0_run_count() as f64);
         gauge!("storage_fjall_l0_run_count", "partition" => "queues")
             .set(self.queues.tree.l0_run_count() as f64);
-        gauge!("storage_fjall_keyspace_disk_space").set(self.keyspace.disk_space() as f64);
-        gauge!("storage_fjall_journal_count").set(self.keyspace.journal_count() as f64);
-        gauge!("storage_fjall_keyspace_sequence").set(self.keyspace.instant() as f64);
+        gauge!("storage_fjall_keyspace_disk_space").set(self.db.disk_space().unwrap() as f64);
+        gauge!("storage_fjall_journal_count").set(self.db.journal_count() as f64);
+        gauge!("storage_fjall_keyspace_sequence").set(self.db.seqno() as f64);
     }
     async fn get_storage_stats(&self) -> StorageResult<serde_json::Value> {
         let s = self.clone();
@@ -1127,12 +1160,12 @@ impl StoreReader for FjallReader {
 #[derive(Clone)]
 pub struct FjallWriter {
     bg_taken: Arc<AtomicBool>,
-    keyspace: Keyspace,
-    global: PartitionHandle,
-    feeds: PartitionHandle,
-    records: PartitionHandle,
-    rollups: PartitionHandle,
-    queues: PartitionHandle,
+    keyspace: Database,
+    global: Keyspace,
+    feeds: Keyspace,
+    records: Keyspace,
+    rollups: Keyspace,
+    queues: Keyspace,
 }
 
 impl FjallWriter {
@@ -1367,7 +1400,7 @@ impl StoreWriter<FjallBackground> for FjallWriter {
                     &Default::default(),
                 )?)
             {
-                let (k, _) = kv?;
+                let (k, _) = kv.into_inner()?;
                 batch.remove(&self.global, k);
             }
             let n = batch.len();
@@ -1456,72 +1489,75 @@ impl StoreWriter<FjallBackground> for FjallWriter {
     }
 
     fn step_rollup(&mut self) -> StorageResult<(usize, HashSet<Nsid>)> {
-        let mut dirty_nsids = HashSet::new();
+        todo!()
 
-        let rollup_cursor =
-            get_static_neu::<NewRollupCursorKey, NewRollupCursorValue>(&self.global)?.ok_or(
-                StorageError::BadStateError("Could not find current rollup cursor".to_string()),
-            )?;
+        // let mut dirty_nsids = HashSet::new();
 
-        // timelies
-        let live_counts_range = LiveCountsKey::range_from_cursor(rollup_cursor)?;
-        let mut timely_iter = self.rollups.range(live_counts_range).peekable();
+        // let rollup_cursor =
+        //     get_static_neu::<NewRollupCursorKey, NewRollupCursorValue>(&self.global)?.ok_or(
+        //         StorageError::BadStateError("Could not find current rollup cursor".to_string()),
+        //     )?;
 
-        let timely_next = timely_iter
-            .peek_mut()
-            .map(|kv| -> StorageResult<LiveCountsKey> {
-                match kv {
-                    Err(e) => Err(std::mem::replace(e, fjall::Error::Poisoned))?,
-                    Ok((key_bytes, _)) => {
-                        let key = db_complete::<LiveCountsKey>(key_bytes)?;
-                        Ok(key)
-                    }
-                }
-            })
-            .transpose()?;
+        // // timelies
+        // let live_counts_range = LiveCountsKey::range_from_cursor(rollup_cursor)?;
+        // let mut timely_iter = self.rollups.range(live_counts_range).peekable();
 
-        // delete accounts
-        let delete_accounts_range =
-            DeleteAccountQueueKey::new(rollup_cursor).range_to_prefix_end()?;
+        // let timely_next = timely_iter
+        //     .peek_mut()
+        //     .map(|kv| -> StorageResult<LiveCountsKey> {
+        //         match kv {
+        //             Err(e) => Err(std::mem::replace(e, fjall::Error::Poisoned))?,
+        //             Ok((key_bytes, _)) => {
+        //                 let key = db_complete::<LiveCountsKey>(key_bytes)?;
+        //                 Ok(key)
+        //             }
+        //         }
+        //     })
+        //     .transpose()?;
 
-        let next_delete = self
-            .queues
-            .range(delete_accounts_range)
-            .next()
-            .transpose()?
-            .map(|(key_bytes, val_bytes)| {
-                db_complete::<DeleteAccountQueueKey>(&key_bytes)
-                    .map(|k| (k.suffix, key_bytes, val_bytes))
-            })
-            .transpose()?;
+        // // delete accounts
+        // let delete_accounts_range =
+        //     DeleteAccountQueueKey::new(rollup_cursor).range_to_prefix_end()?;
 
-        let cursors_stepped = match (timely_next, next_delete) {
-            (Some(timely), Some((delete_cursor, delete_key_bytes, delete_val_bytes))) => {
-                if timely.cursor() < delete_cursor {
-                    let (n, dirty) = self.rollup_live_counts(
-                        timely_iter,
-                        Some(delete_cursor),
-                        MAX_BATCHED_ROLLUP_COUNTS,
-                    )?;
-                    dirty_nsids.extend(dirty);
-                    n
-                } else {
-                    self.rollup_delete_account(delete_cursor, &delete_key_bytes, &delete_val_bytes)?
-                }
-            }
-            (Some(_), None) => {
-                let (n, dirty) =
-                    self.rollup_live_counts(timely_iter, None, MAX_BATCHED_ROLLUP_COUNTS)?;
-                dirty_nsids.extend(dirty);
-                n
-            }
-            (None, Some((delete_cursor, delete_key_bytes, delete_val_bytes))) => {
-                self.rollup_delete_account(delete_cursor, &delete_key_bytes, &delete_val_bytes)?
-            }
-            (None, None) => 0,
-        };
+        // let next_delete = self
+        //     .queues
+        //     .range(delete_accounts_range)
+        //     .next()
+        //     .map(fjall::Guard::into_inner)
+        //     .transpose()?
+        //     .map(|(key_bytes, val_bytes)| {
+        //         db_complete::<DeleteAccountQueueKey>(&key_bytes)
+        //             .map(|k| (k.suffix, key_bytes, val_bytes))
+        //     })
+        //     .transpose()?;
 
-        Ok((cursors_stepped, dirty_nsids))
+        // let cursors_stepped = match (timely_next, next_delete) {
+        //     (Some(timely), Some((delete_cursor, delete_key_bytes, delete_val_bytes))) => {
+        //         if timely.cursor() < delete_cursor {
+        //             let (n, dirty) = self.rollup_live_counts(
+        //                 timely_iter,
+        //                 Some(delete_cursor),
+        //                 MAX_BATCHED_ROLLUP_COUNTS,
+        //             )?;
+        //             dirty_nsids.extend(dirty);
+        //             n
+        //         } else {
+        //             self.rollup_delete_account(delete_cursor, &delete_key_bytes, &delete_val_bytes)?
+        //         }
+        //     }
+        //     (Some(_), None) => {
+        //         let (n, dirty) =
+        //             self.rollup_live_counts(timely_iter, None, MAX_BATCHED_ROLLUP_COUNTS)?;
+        //         dirty_nsids.extend(dirty);
+        //         n
+        //     }
+        //     (None, Some((delete_cursor, delete_key_bytes, delete_val_bytes))) => {
+        //         self.rollup_delete_account(delete_cursor, &delete_key_bytes, &delete_val_bytes)?
+        //     }
+        //     (None, None) => 0,
+        // };
+
+        // Ok((cursors_stepped, dirty_nsids))
     }
 
     fn trim_collection(
@@ -1566,7 +1602,7 @@ impl StoreWriter<FjallBackground> for FjallWriter {
                         .unwrap_or("??".into()),
                 );
             }
-            let (key_bytes, val_bytes) = kv?;
+            let (key_bytes, val_bytes) = kv.into_inner()?;
             let feed_key = db_complete::<NsidRecordFeedKey>(&key_bytes)?;
             let feed_val = db_complete::<NsidRecordFeedVal>(&val_bytes)?;
             let location_key: RecordLocationKey = (&feed_key, &feed_val).into();
@@ -1628,7 +1664,7 @@ impl StoreWriter<FjallBackground> for FjallWriter {
         let mut batch = self.keyspace.batch();
         let prefix = RecordLocationKey::from_prefix_to_db_bytes(did)?;
         for kv in self.records.prefix(prefix) {
-            let (key_bytes, _) = kv?;
+            let key_bytes = kv.key()?;
             batch.remove(&self.records, key_bytes);
             records_deleted += 1;
             if batch.len() >= MAX_BATCHED_ACCOUNT_DELETE_RECORDS {
@@ -1714,7 +1750,7 @@ impl StoreBackground for FjallBackground {
 }
 
 /// Get a value from a fixed key
-fn get_static_neu<K: StaticStr, V: DbBytes>(global: &PartitionHandle) -> StorageResult<Option<V>> {
+fn get_static_neu<K: StaticStr, V: DbBytes>(global: &Keyspace) -> StorageResult<Option<V>> {
     let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
     let value = global
         .get(&key_bytes)?
@@ -1725,21 +1761,19 @@ fn get_static_neu<K: StaticStr, V: DbBytes>(global: &PartitionHandle) -> Storage
 
 /// Get a value from a fixed key
 fn get_snapshot_static_neu<K: StaticStr, V: DbBytes>(
-    global: &fjall::Snapshot,
+    snapshot: &Snapshot,
+    keyspace: &Keyspace,
 ) -> StorageResult<Option<V>> {
     let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
-    let value = global
-        .get(&key_bytes)?
+    let value = snapshot
+        .get(keyspace, &key_bytes)?
         .map(|value_bytes| db_complete(&value_bytes))
         .transpose()?;
     Ok(value)
 }
 
 /// Set a value to a fixed key
-fn insert_static_neu<K: StaticStr>(
-    global: &PartitionHandle,
-    value: impl DbBytes,
-) -> StorageResult<()> {
+fn insert_static_neu<K: StaticStr>(global: &Keyspace, value: impl DbBytes) -> StorageResult<()> {
     let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
     let value_bytes = value.to_db_bytes()?;
     global.insert(&key_bytes, &value_bytes)?;
@@ -1750,10 +1784,7 @@ fn insert_static_neu<K: StaticStr>(
 ///
 /// Intended for single-threaded init: not safe under concurrency, since there
 /// is no transaction between checking if the already exists and writing it.
-fn init_static_neu<K: StaticStr>(
-    global: &PartitionHandle,
-    value: impl DbBytes,
-) -> StorageResult<()> {
+fn init_static_neu<K: StaticStr>(global: &Keyspace, value: impl DbBytes) -> StorageResult<()> {
     let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
     if global.get(&key_bytes)?.is_some() {
         return Err(StorageError::InitError(format!(
@@ -1768,7 +1799,7 @@ fn init_static_neu<K: StaticStr>(
 /// Set a value to a fixed key
 fn insert_batch_static_neu<K: StaticStr>(
     batch: &mut FjallBatch,
-    global: &PartitionHandle,
+    global: &Keyspace,
     value: impl DbBytes,
 ) -> StorageResult<()> {
     let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;

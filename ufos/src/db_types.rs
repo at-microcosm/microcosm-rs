@@ -7,7 +7,7 @@ use bincode::{
     encode_to_vec,
     error::{DecodeError, EncodeError},
 };
-use lsm_tree::range::prefix_to_range;
+use fjall::util::prefix_to_range;
 use std::fmt;
 use std::marker::PhantomData;
 use std::ops::{Bound, Range};
