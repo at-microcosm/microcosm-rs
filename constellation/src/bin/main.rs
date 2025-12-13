@@ -26,6 +26,10 @@ struct Args {
     #[arg(long)]
     #[clap(default_value = "0.0.0.0:6789")]
     bind: SocketAddr,
+    /// optionally disable the metrics server
+    #[arg(long)]
+    #[clap(default_value_t = false)]
+    collect_metrics: bool,
     /// metrics server's listen address
     #[arg(long)]
     #[clap(default_value = "0.0.0.0:8765")]
@@ -92,6 +96,7 @@ fn main() -> Result<()> {
     let bind = args.bind;
     let metrics_bind = args.bind_metrics;
 
+    let collect_metrics = args.collect_metrics;
     let stay_alive = CancellationToken::new();
 
     match args.backend {
@@ -102,6 +107,7 @@ fn main() -> Result<()> {
             stream,
             bind,
             metrics_bind,
+            collect_metrics,
             stay_alive,
         ),
         #[cfg(feature = "rocks")]
@@ -136,6 +142,7 @@ fn main() -> Result<()> {
                         stream,
                         bind,
                         metrics_bind,
+                        collect_metrics,
                         stay_alive,
                     );
                     eprintln!("run finished: {r:?}");
@@ -147,6 +154,8 @@ fn main() -> Result<()> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
 fn run(
     mut storage: impl LinkStorage,
     fixture: Option<PathBuf>,
@@ -154,6 +163,7 @@ fn run(
     stream: String,
     bind: SocketAddr,
     metrics_bind: SocketAddr,
+    collect_metrics: bool,
     stay_alive: CancellationToken,
 ) -> Result<()> {
     ctrlc::set_handler({
@@ -198,7 +208,10 @@ fn run(
                     .build()
                     .expect("axum startup")
                     .block_on(async {
-                        install_metrics_server(metrics_bind)?;
+                        // Install metrics server only if requested
+                        if collect_metrics {
+                            install_metrics_server(metrics_bind)?;
+                        }
                         serve(readable, bind, staying_alive).await
                     })
                     .unwrap();
@@ -206,7 +219,9 @@ fn run(
             }
         });
 
-        s.spawn(move || { // monitor thread
+        // only spawn monitoring thread if the metrics server is running
+        if collect_metrics {
+            s.spawn(move || { // monitor thread
             let stay_alive = stay_alive.clone();
             let check_alive = stay_alive.clone();
 
@@ -258,7 +273,8 @@ fn run(
                 }
             }
             stay_alive.drop_guard();
-        });
+            });
+        }
     });
 
     println!("byeeee");
