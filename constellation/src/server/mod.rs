@@ -239,6 +239,9 @@ struct GetManyToManyCountsQuery {
     /// Set the max number of links to return per page of results
     #[serde(default = "get_default_cursor_limit")]
     limit: u64,
+    /// Allow returning links in reverse order (default: false)
+    #[serde(default)]
+    reverse: bool,
 }
 #[derive(Serialize)]
 struct OtherSubjectCount {
@@ -301,6 +304,7 @@ fn get_many_to_many_counts(
             collection,
             &path,
             &path_to_other,
+            query.reverse,
             limit,
             cursor_key,
             &filter_dids,
@@ -409,7 +413,9 @@ struct GetBacklinksQuery {
     /// Set the max number of links to return per page of results
     #[serde(default = "get_default_cursor_limit")]
     limit: u64,
-    // TODO: allow reverse (er, forward) order as well
+    /// Allow returning links in reverse order (default: false)
+    #[serde(default)]
+    reverse: bool,
 }
 #[derive(Template, Serialize)]
 #[template(path = "get-backlinks.html.j2")]
@@ -460,6 +466,7 @@ fn get_backlinks(
             &query.subject,
             collection,
             &path,
+            query.reverse,
             limit,
             until,
             &filter_dids,
@@ -508,7 +515,9 @@ struct GetLinkItemsQuery {
     from_dids: Option<String>, // comma separated: gross
     #[serde(default = "get_default_cursor_limit")]
     limit: u64,
-    // TODO: allow reverse (er, forward) order as well
+    /// Allow returning links in reverse order (default: false)
+    #[serde(default)]
+    reverse: bool,
 }
 #[derive(Template, Serialize)]
 #[template(path = "links.html.j2")]
@@ -562,6 +571,7 @@ fn get_links(
             &query.target,
             &query.collection,
             &query.path,
+            query.reverse,
             limit,
             until,
             &filter_dids,
@@ -594,7 +604,6 @@ struct GetDidItemsQuery {
     path: String,
     cursor: Option<OpaqueApiCursor>,
     limit: Option<u64>,
-    // TODO: allow reverse (er, forward) order as well
 }
 #[derive(Template, Serialize)]
 #[template(path = "dids.html.j2")]

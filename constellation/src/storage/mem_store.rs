@@ -140,6 +140,7 @@ impl LinkReader for MemStorage {
         collection: &str,
         path: &str,
         path_to_other: &str,
+        reverse: bool,
         limit: u64,
         after: Option<String>,
         filter_dids: &HashSet<Did>,
@@ -157,8 +158,10 @@ impl LinkReader for MemStorage {
         let filter_to_targets: HashSet<Target> =
             HashSet::from_iter(filter_to_targets.iter().map(|s| Target::new(s)));
 
-        let mut grouped_counts: HashMap<Target, (u64, HashSet<Did>)> = HashMap::new();
-        for (did, rkey) in linkers.iter().flatten().cloned() {
+        // the last type field here acts as an index to allow keeping track of the order in which
+        // we encountred single elements
+        let mut grouped_counts: HashMap<Target, (u64, HashSet<Did>, usize)> = HashMap::new();
+        for (idx, (did, rkey)) in linkers.iter().flatten().cloned().enumerate() {
             if !filter_dids.is_empty() && !filter_dids.contains(&did) {
                 continue;
             }
@@ -184,16 +187,24 @@ impl LinkReader for MemStorage {
                 .take(1)
                 .next()
             {
-                let e = grouped_counts.entry(fwd_target.clone()).or_default();
+                let e =
+                    grouped_counts
+                        .entry(fwd_target.clone())
+                        .or_insert((0, HashSet::new(), idx));
                 e.0 += 1;
                 e.1.insert(did.clone());
             }
         }
         let mut items: Vec<(String, u64, u64)> = grouped_counts
             .iter()
-            .map(|(k, (n, u))| (k.0.clone(), *n, u.len() as u64))
+            .map(|(k, (n, u, _))| (k.0.clone(), *n, u.len() as u64))
             .collect();
-        items.sort();
+        // sort in reverse order to show entries from oldest to newest
+        if reverse {
+            items.sort_by(|a, b| b.cmp(a));
+        } else {
+            items.sort();
+        }
         items = items
             .into_iter()
             .skip_while(|(t, _, _)| after.as_ref().map(|a| t <= a).unwrap_or(false))
@@ -239,6 +250,7 @@ impl LinkReader for MemStorage {
         target: &str,
         collection: &str,
         path: &str,
+        reverse: bool,
         limit: u64,
         until: Option<u64>,
         filter_dids: &HashSet<Did>,
@@ -261,7 +273,7 @@ impl LinkReader for MemStorage {
             });
         };
 
-        let did_rkeys: Vec<_> = if !filter_dids.is_empty() {
+        let mut did_rkeys: Vec<_> = if !filter_dids.is_empty() {
             did_rkeys
                 .iter()
                 .filter(|m| {
@@ -284,6 +296,10 @@ impl LinkReader for MemStorage {
 
         let alive = did_rkeys.iter().flatten().count();
         let gone = total - alive;
+
+        if reverse {
+            did_rkeys.reverse();
+        }
 
         let items: Vec<_> = did_rkeys[begin..end]
             .iter()

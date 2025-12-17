@@ -941,6 +941,7 @@ impl LinkReader for RocksStorage {
         collection: &str,
         path: &str,
         path_to_other: &str,
+        reverse: bool,
         limit: u64,
         after: Option<String>,
         filter_dids: &HashSet<Did>,
@@ -1071,6 +1072,7 @@ impl LinkReader for RocksStorage {
         }
 
         let mut items: Vec<(String, u64, u64)> = Vec::with_capacity(grouped_counts.len());
+
         for (target_id, (n, dids)) in &grouped_counts {
             let Some(target) = self
                 .target_id_table
@@ -1080,6 +1082,13 @@ impl LinkReader for RocksStorage {
                 continue;
             };
             items.push((target.0 .0, *n, dids.len() as u64));
+        }
+
+        // Sort in desired direction
+        if reverse {
+            items.sort_by(|a, b| b.cmp(a)); // descending
+        } else {
+            items.sort(); // ascending
         }
 
         let next = if grouped_counts.len() as u64 >= limit {
@@ -1127,6 +1136,7 @@ impl LinkReader for RocksStorage {
         target: &str,
         collection: &str,
         path: &str,
+        reverse: bool,
         limit: u64,
         until: Option<u64>,
         filter_dids: &HashSet<Did>,
@@ -1171,7 +1181,11 @@ impl LinkReader for RocksStorage {
         let begin = end.saturating_sub(limit as usize);
         let next = if begin == 0 { None } else { Some(begin as u64) };
 
-        let did_id_rkeys = linkers.0[begin..end].iter().rev().collect::<Vec<_>>();
+        let mut did_id_rkeys = linkers.0[begin..end].iter().rev().collect::<Vec<_>>();
+
+        if reverse {
+            did_id_rkeys.reverse();
+        }
 
         let mut items = Vec::with_capacity(did_id_rkeys.len());
         // TODO: use get-many (or multi-get or whatever it's called)

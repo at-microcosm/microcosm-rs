@@ -1,4 +1,4 @@
-{% macro get_backlinks(subject, source, dids, limit) %}
+{% macro get_backlinks(subject, source, dids, limit, reverse) %}
   <form method="get" action="/xrpc/blue.microcosm.links.getBacklinks">
     <pre class="code"><strong>GET</strong> /xrpc/blue.microcosm.links.getBacklinks
   ?subject=    <input type="text" name="subject" value="{{ subject }}" placeholder="at-uri, did, uri..." />
@@ -6,7 +6,8 @@
   {%- for did in dids %}{% if !did.is_empty() %}
   &did=        <input type="text" name="did" value="{{ did }}" placeholder="did:plc:..." />{% endif %}{% endfor %}
   <span id="did-placeholder"></span>             <button id="add-did">+ did filter</button>
-  &limit=      <input type="number" name="limit" value="{{ limit }}" max="100" placeholder="100" /> <button type="submit">get links</button></pre>
+  &limit=      <input type="number" name="limit" value="{{ limit }}" max="100" placeholder="100" />
+  &reverse=    <input type="checkbox" name="reverse" value="true" checked="false"><button type="submit">get links</button></pre>
   </form>
   <script>
     const addDidButton = document.getElementById('add-did');
@@ -24,7 +25,7 @@
   </script>
 {% endmacro %}
 
-{% macro get_many_to_many_counts(subject, source, pathToOther, dids, otherSubjects, limit) %}
+{% macro get_many_to_many_counts(subject, source, pathToOther, dids, otherSubjects, limit, reverse) %}
   <form method="get" action="/xrpc/blue.microcosm.links.getManyToManyCounts">
     <pre class="code"><strong>GET</strong> /xrpc/blue.microcosm.links.getManyToManyCounts
   ?subject=      <input type="text" name="subject" value="{{ subject }}" placeholder="at-uri, did, uri..." />
@@ -36,7 +37,8 @@
   {%- for otherSubject in otherSubjects %}{% if !otherSubject.is_empty() %}
   &otherSubject= <input type="text" name="did" value="{{ otherSubject }}" placeholder="at-uri, did, uri..." />{% endif %}{% endfor %}
   <span id="m2m-did-placeholder"></span>               <button id="m2m-add-did">+ did filter</button>
-  &limit=        <input type="number" name="limit" value="{{ limit }}" max="100" placeholder="100" /> <button type="submit">get links</button></pre>
+  &limit=        <input type="number" name="limit" value="{{ limit }}" max="100" placeholder="100" />
+  &reverse=      <input type="checkbox" name="reverse" value="true" checked="false"><button type="submit">get links</button></pre>
   </form>
   <script>
     const m2mAddDidButton = document.getElementById('m2m-add-did');
@@ -66,7 +68,7 @@
   </script>
 {% endmacro %}
 
-{% macro links(target, collection, path, dids, limit) %}
+{% macro links(target, collection, path, dids, limit, reverse) %}
   <form method="get" action="/links">
     <pre class="code"><strong>GET</strong> /links
   ?target=     <input type="text" name="target" value="{{ target }}" placeholder="target" />
@@ -75,7 +77,9 @@
   {%- for did in dids %}{% if !did.is_empty() %}
   &did=        <input type="text" name="did" value="{{ did }}" placeholder="did:plc:..." />{% endif %}{% endfor %}
   <span id="did-placeholder"></span>             <button id="add-did">+ did filter</button>
-  &limit=      <input type="number" name="limit" value="{{ limit }}" max="100" placeholder="100" /> <button type="submit">get links</button></pre>
+  &limit=      <input type="number" name="limit" value="{{ limit }}" max="100" placeholder="100" />
+  &reverse=	   <input type="checkbox" name="reverse" value="true" checked="false">
+  <button type="submit">get links</button></pre>
   </form>
   <script>
     const addDidButton = document.getElementById('add-did');
