@@ -844,6 +844,87 @@ mod tests {
         assert_stats(storage.get_stats()?, 5..=5, 1..=1, 5..=5);
     });
 
+    test_each_storage!(get_links_reverse_order, |storage| {
+        for i in 1..=5 {
+            storage.push(
+                &ActionableEvent::CreateLinks {
+                    record_id: RecordId {
+                        did: format!("did:plc:asdf-{i}").into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                    links: vec![CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    }],
+                },
+                0,
+            )?;
+        }
+
+        // Test reverse: true (oldest first)
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            true,
+            2,
+            None,
+            &HashSet::default(),
+        )?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (5, 0),
+                items: vec![
+                    RecordId {
+                        did: "did:plc:asdf-1".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                    RecordId {
+                        did: "did:plc:asdf-2".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                ],
+                next: Some(3),
+                total: 5,
+            }
+        );
+        // Test reverse: false (newest first)
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            false,
+            2,
+            None,
+            &HashSet::default(),
+        )?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (5, 0),
+                items: vec![
+                    RecordId {
+                        did: "did:plc:asdf-5".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                    RecordId {
+                        did: "did:plc:asdf-4".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                ],
+                next: Some(3),
+                total: 5,
+            }
+        );
+        assert_stats(storage.get_stats()?, 5..=5, 1..=1, 5..=5);
+    });
+
     test_each_storage!(get_filtered_links, |storage| {
         let links = storage.get_links(
             "a.com",
@@ -1607,5 +1688,105 @@ mod tests {
                 next: None,
             }
         );
+    });
+
+    test_each_storage!(get_m2m_counts_reverse_order, |storage| {
+        // Create links from different DIDs to different targets
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:user1".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "post1".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("b.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                ],
+            },
+            0,
+        )?;
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:user2".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "post1".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("c.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                ],
+            },
+            1,
+        )?;
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:user3".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "post1".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("d.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                ],
+            },
+            2,
+        )?;
+
+        // Test reverse: false (default order - by target ascending)
+        let counts = storage.get_many_to_many_counts(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            false,
+            10,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(counts.items.len(), 3);
+        // Should be sorted by target in ascending order (alphabetical)
+        assert_eq!(counts.items[0].0, "b.com");
+        assert_eq!(counts.items[1].0, "c.com");
+        assert_eq!(counts.items[2].0, "d.com");
+
+        // Test reverse: true (descending order - by target descending)
+        let counts = storage.get_many_to_many_counts(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            true,
+            10,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(counts.items.len(), 3);
+        // Should be sorted by target in descending order (reverse alphabetical)
+        assert_eq!(counts.items[0].0, "d.com");
+        assert_eq!(counts.items[1].0, "c.com");
+        assert_eq!(counts.items[2].0, "b.com");
     });
 }
