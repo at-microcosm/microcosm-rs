@@ -731,8 +731,15 @@ mod tests {
                 0,
             )?;
         }
-        let links =
-            storage.get_links("a.com", "app.t.c", ".abc.uri", false, 2, None, &HashSet::default())?;
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            false,
+            2,
+            None,
+            &HashSet::default(),
+        )?;
         let dids = storage.get_distinct_dids("a.com", "app.t.c", ".abc.uri", 2, None)?;
         assert_eq!(
             links,
@@ -1043,8 +1050,15 @@ mod tests {
                 0,
             )?;
         }
-        let links =
-            storage.get_links("a.com", "app.t.c", ".abc.uri", false, 2, None, &HashSet::default())?;
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            false,
+            2,
+            None,
+            &HashSet::default(),
+        )?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -1114,8 +1128,15 @@ mod tests {
                 0,
             )?;
         }
-        let links =
-            storage.get_links("a.com", "app.t.c", ".abc.uri", false, 2, None, &HashSet::default())?;
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            false,
+            2,
+            None,
+            &HashSet::default(),
+        )?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -1199,8 +1220,15 @@ mod tests {
                 0,
             )?;
         }
-        let links =
-            storage.get_links("a.com", "app.t.c", ".abc.uri", false, 2, None, &HashSet::default())?;
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            false,
+            2,
+            None,
+            &HashSet::default(),
+        )?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -1271,8 +1299,15 @@ mod tests {
                 0,
             )?;
         }
-        let links =
-            storage.get_links("a.com", "app.t.c", ".abc.uri", false, 2, None, &HashSet::default())?;
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            false,
+            2,
+            None,
+            &HashSet::default(),
+        )?;
         assert_eq!(
             links,
             PagedAppendingCollection {
