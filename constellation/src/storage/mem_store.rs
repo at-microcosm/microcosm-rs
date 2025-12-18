@@ -273,7 +273,7 @@ impl LinkReader for MemStorage {
             });
         };
 
-        let mut did_rkeys: Vec<_> = if !filter_dids.is_empty() {
+        let did_rkeys: Vec<_> = if !filter_dids.is_empty() {
             did_rkeys
                 .iter()
                 .filter(|m| {
@@ -288,20 +288,32 @@ impl LinkReader for MemStorage {
         };
 
         let total = did_rkeys.len();
-        let end = until
-            .map(|u| std::cmp::min(u as usize, total))
-            .unwrap_or(total);
-        let begin = end.saturating_sub(limit as usize);
-        let next = if begin == 0 { None } else { Some(begin as u64) };
+
+        let begin: usize;
+        let end: usize;
+        let next: Option<u64>;
+
+        if reverse {
+            begin = until.map(|u| (u) as usize).unwrap_or(0);
+            end = std::cmp::min(begin + limit as usize, total);
+
+            next = if end < total {
+                Some(end as u64 + 1)
+            } else {
+                None
+            };
+        } else {
+            end = until
+                .map(|u| std::cmp::min(u as usize, total))
+                .unwrap_or(total);
+            begin = end.saturating_sub(limit as usize);
+            next = if begin == 0 { None } else { Some(begin as u64) };
+        }
 
         let alive = did_rkeys.iter().flatten().count();
         let gone = total - alive;
 
-        if reverse {
-            did_rkeys.reverse();
-        }
-
-        let items: Vec<_> = did_rkeys[begin..end]
+        let mut items: Vec<_> = did_rkeys[begin..end]
             .iter()
             .rev()
             .flatten()
@@ -312,6 +324,10 @@ impl LinkReader for MemStorage {
                 collection: collection.to_string(),
             })
             .collect();
+
+        if reverse {
+            items.reverse();
+        }
 
         Ok(PagedAppendingCollection {
             version: (total as u64, gone as u64),

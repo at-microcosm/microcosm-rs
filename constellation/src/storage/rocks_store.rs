@@ -1177,9 +1177,25 @@ impl LinkReader for RocksStorage {
 
         let (alive, gone) = linkers.count();
         let total = alive + gone;
-        let end = until.map(|u| std::cmp::min(u, total)).unwrap_or(total) as usize;
-        let begin = end.saturating_sub(limit as usize);
-        let next = if begin == 0 { None } else { Some(begin as u64) };
+
+        let end: usize;
+        let begin: usize;
+        let next: Option<u64>;
+
+        if reverse {
+            begin = until.map(|u| (u - 1) as usize).unwrap_or(0);
+            end = std::cmp::min(begin + limit as usize, total as usize);
+
+            next = if end < total as usize {
+                Some(end as u64 + 1)
+            } else {
+                None
+            }
+        } else {
+            end = until.map(|u| std::cmp::min(u, total)).unwrap_or(total) as usize;
+            begin = end.saturating_sub(limit as usize);
+            next = if begin == 0 { None } else { Some(begin as u64) };
+        }
 
         let mut did_id_rkeys = linkers.0[begin..end].iter().rev().collect::<Vec<_>>();
 
