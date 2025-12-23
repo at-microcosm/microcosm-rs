@@ -25,8 +25,8 @@ mod filters;
 
 use acceptable::{acceptable, ExtractAccept};
 
-const DEFAULT_CURSOR_LIMIT: u64 = 16;
-const DEFAULT_CURSOR_LIMIT_MAX: u64 = 100;
+const DEFAULT_CURSOR_LIMIT: u64 = 100;
+const DEFAULT_CURSOR_LIMIT_MAX: u64 = 1000;
 
 fn get_default_cursor_limit() -> u64 {
     DEFAULT_CURSOR_LIMIT
