@@ -27,7 +27,7 @@
   {% for did in linking_dids %}
     <pre style="display: block; margin: 1em 2em" class="code"><strong>DID</strong>: {{ did.0 }}
   -> see <a href="/links/all?target={{ did.0|urlencode }}">links to this DID</a>
-  -> browse <a href="https://pdsls.dev/at://{{ did.0|urlencode }}">this DID record</a></pre>
+  -> browse <a href="https://pdsls.dev/at://{{ did.0 }}">this DID record</a></pre>
   {% endfor %}
 
   {% if let Some(c) = cursor %}
