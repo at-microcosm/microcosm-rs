@@ -147,7 +147,7 @@ impl Xrpc {
             storage
                 .lock()
                 .unwrap()
-                .get(&did, "net.at-app.pet.ptr.nucleus.getPreferences")
+                .get(&did, "net.at-app.pet.ptr.nucleus")
                 .inspect_err(|e| log::error!("failed to get prefs: {e}"))
         })
         .await
@@ -185,7 +185,7 @@ impl Xrpc {
     ///
     /// TODO: don't hardcode nucleus
     #[oai(
-        path = "/net.at-app.pet.ptr.nucleus.getPreferences",
+        path = "/net.at-app.pet.ptr.nucleus.putPreferences",
         method = "post",
         tag = "ApiTags::Pocket"
     )]
@@ -227,11 +227,7 @@ impl Xrpc {
             storage
                 .lock()
                 .unwrap()
-                .put(
-                    &did,
-                    "net.at-app.pet.ptr.nucleus.getPreferences",
-                    &serialized,
-                )
+                .put(&did, "net.at-app.pet.ptr.nucleus", &serialized)
                 .inspect_err(|e| log::error!("failed to insert prefs: {e}"))
         })
         .await
