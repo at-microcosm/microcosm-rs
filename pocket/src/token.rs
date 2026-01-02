@@ -14,10 +14,14 @@ struct MiniDoc {
 
 #[derive(Error, Debug)]
 pub enum VerifyError {
+    // client errors
+    #[error("Bad cross-service authorization token: {0}")]
+    BadToken(&'static str),
+    #[error("Could not find that identity")]
+    ProbablyBadIdentity,
+    // server errors
     #[error("The cross-service authorization token failed verification: {0}")]
-    VerificationFailed(&'static str),
-    #[error("Error trying to resolve the DID to a signing key, retry in a moment: {0}")]
-    ResolutionFailed(&'static str),
+    FailedToVerify(&'static str),
 }
 
 pub struct TokenVerifier {
@@ -41,32 +45,31 @@ impl TokenVerifier {
     pub async fn verify(
         &self,
         expected_lxm: &str,
+        expected_aud: &str,
         token: &str,
-    ) -> Result<(String, String), VerifyError> {
+    ) -> Result<String, VerifyError> {
         let untrusted = UntrustedToken::new(token).unwrap();
 
         // danger! unfortunately we need to decode the DID from the jwt body before we have a public key to verify the jwt with
         let Ok(untrusted_claims) =
             untrusted.deserialize_claims_unchecked::<HashMap<String, String>>()
         else {
-            return Err(VerifyError::VerificationFailed(
-                "could not deserialize jtw claims",
-            ));
+            return Err(VerifyError::BadToken("could not deserialize jtw claims"));
         };
 
         // get the (untrusted!) claimed DID
         let Some(untrusted_did) = untrusted_claims.custom.get("iss") else {
-            return Err(VerifyError::VerificationFailed(
+            return Err(VerifyError::BadToken(
                 "jwt must include the user's did in `iss`",
             ));
         };
 
         // bail if it's not even a user-ish did
         if !untrusted_did.starts_with("did:") {
-            return Err(VerifyError::VerificationFailed("iss should be a did"));
+            return Err(VerifyError::BadToken("iss should be a did"));
         }
         if untrusted_did.contains("#") {
-            return Err(VerifyError::VerificationFailed(
+            return Err(VerifyError::BadToken(
                 "iss should be a user did without a service identifier",
             ));
         }
@@ -78,23 +81,23 @@ impl TokenVerifier {
             .get(format!("{endpoint}?identifier={untrusted_did}"))
             .send()
             .await
-            .map_err(|_| VerifyError::ResolutionFailed("failed to fetch minidoc"))?
+            .map_err(|_| VerifyError::FailedToVerify("failed to fetch minidoc"))?
             .error_for_status()
-            .map_err(|_| VerifyError::ResolutionFailed("non-ok response for minidoc"))?
+            .map_err(|_| VerifyError::ProbablyBadIdentity)?
             .json()
             .await
-            .map_err(|_| VerifyError::ResolutionFailed("failed to parse json to minidoc"))?;
+            .map_err(|_| VerifyError::FailedToVerify("failed to parse json to minidoc"))?;
 
         // sanity check before we go ahead with this signing key
         if doc.did != *untrusted_did {
-            return Err(VerifyError::VerificationFailed(
-                "wtf, resolveMiniDoc returned a doc for a different DID, slingshot bug",
+            return Err(VerifyError::FailedToVerify(
+                "resolveMiniDoc returned a doc for a different DID: slingshot bug??",
             ));
         }
 
         let Ok((alg, public_key)) = parse_multikey(&doc.signing_key) else {
-            return Err(VerifyError::VerificationFailed(
-                "could not parse signing key form minidoc",
+            return Err(VerifyError::FailedToVerify(
+                "could not parse signing key from minidoc",
             ));
         };
 
@@ -106,33 +109,34 @@ impl TokenVerifier {
             untrusted.signature_bytes(),
         ) {
             log::warn!("jwt verification failed: {e}");
-            return Err(VerifyError::VerificationFailed(
-                "jwt signature verification failed",
-            ));
+            return Err(VerifyError::BadToken("jwt signature verification failed"));
         }
 
-        // past this point we're should have established trust. crossing ts and dotting is.
+        // past this point we've established that the token is authentic. crossing ts and dotting is.
         let did = &untrusted_did;
         let claims = &untrusted_claims;
 
         let Some(aud) = claims.custom.get("aud") else {
-            return Err(VerifyError::VerificationFailed("missing aud"));
+            return Err(VerifyError::BadToken("missing aud"));
         };
         let Some(mut aud) = aud.strip_prefix("did:web:") else {
-            return Err(VerifyError::VerificationFailed("expected a did:web aud"));
+            return Err(VerifyError::BadToken("expected a did:web aud"));
         };
         if let Some((aud_without_hash, _)) = aud.split_once("#") {
             log::warn!("aud claim is missing service id fragment: {aud:?}");
             aud = aud_without_hash;
         }
+        if aud != expected_aud {
+            return Err(VerifyError::BadToken("wrong aud"));
+        }
         let Some(lxm) = claims.custom.get("lxm") else {
-            return Err(VerifyError::VerificationFailed("missing lxm"));
+            return Err(VerifyError::BadToken("missing lxm"));
         };
         if lxm != expected_lxm {
-            return Err(VerifyError::VerificationFailed("wrong lxm"));
+            return Err(VerifyError::BadToken("wrong lxm"));
         }
 
-        Ok((did.to_string(), aud.to_string()))
+        Ok(did.to_string())
     }
 }
 

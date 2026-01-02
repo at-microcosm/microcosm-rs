@@ -1,9 +1,12 @@
-use crate::{Storage, TokenVerifier};
+use crate::{Storage, TokenVerifier, VerifyError};
 use poem::{
     Endpoint, EndpointExt, Route, Server,
     endpoint::{StaticFileEndpoint, make_sync},
     http::Method,
-    listener::TcpListener,
+    listener::{
+        Listener, TcpListener,
+        acme::{AutoCert, LETS_ENCRYPT_PRODUCTION},
+    },
     middleware::{CatchPanic, Cors, Tracing},
 };
 use poem_openapi::{
@@ -15,6 +18,7 @@ use poem_openapi::{
 };
 use serde::Serialize;
 use serde_json::{Value, json};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, SecurityScheme)]
@@ -54,11 +58,10 @@ fn xrpc_error(error: impl AsRef<str>, message: impl AsRef<str>) -> XrpcError {
 
 #[derive(Debug, Object)]
 #[oai(example = true)]
-struct BskyPrefsObject {
-    /// at-uri for this record
+struct PrefsObject {
     preferences: Value,
 }
-impl Example for BskyPrefsObject {
+impl Example for PrefsObject {
     fn example() -> Self {
         Self {
             preferences: json!({
@@ -69,53 +72,74 @@ impl Example for BskyPrefsObject {
 }
 
 #[derive(ApiResponse)]
-enum GetBskyPrefsResponse {
+enum GetPrefsResponse {
     /// Record found
     #[oai(status = 200)]
-    Ok(Json<BskyPrefsObject>),
+    Ok(Json<PrefsObject>),
     /// Bad request or no preferences to return
     #[oai(status = 400)]
     BadRequest(XrpcError),
+    /// Server errors
+    #[oai(status = 500)]
+    ServerError(XrpcError),
 }
 
 #[derive(ApiResponse)]
-enum PutBskyPrefsResponse {
+enum PutPrefsResponse {
     /// Record found
     #[oai(status = 200)]
     Ok(PlainText<String>),
     /// Bad request or no preferences to return
     #[oai(status = 400)]
     BadRequest(XrpcError),
-    // /// Server errors
-    // #[oai(status = 500)]
-    // ServerError(XrpcError),
+    /// Server errors
+    #[oai(status = 500)]
+    ServerError(XrpcError),
 }
 
 struct Xrpc {
+    aud: String,
     verifier: TokenVerifier,
     storage: Arc<Mutex<Storage>>,
 }
 
 #[OpenApi]
 impl Xrpc {
-    /// com.bad-example.pocket.getPreferences
+    /// getPreferences
     ///
-    /// get stored preferencess
+    /// get stored preferences
+    ///
+    /// TODO: don't hardcode nucleus
     #[oai(
-        path = "/com.bad-example.pocket.getPreferences",
+        path = "/net.at-app.pet.ptr.nucleus.getPreferences",
         method = "get",
         tag = "ApiTags::Pocket"
     )]
-    async fn pocket_get_prefs(&self, XrpcAuth(auth): XrpcAuth) -> GetBskyPrefsResponse {
-        let (did, aud) = match self
+    async fn pocket_get_prefs(&self, XrpcAuth(auth): XrpcAuth) -> GetPrefsResponse {
+        let did = match self
             .verifier
-            .verify("com.bad-example.pocket.getPreferences", &auth.token)
+            .verify(
+                "net.at-app.pet.ptr.nucleus.getPreferences",
+                &self.aud,
+                &auth.token,
+            )
             .await
         {
             Ok(d) => d,
-            Err(e) => return GetBskyPrefsResponse::BadRequest(xrpc_error("boooo", e.to_string())),
+            Err(VerifyError::BadToken(reason)) => {
+                return GetPrefsResponse::BadRequest(xrpc_error("BadToken", reason));
+            }
+            Err(VerifyError::ProbablyBadIdentity) => {
+                return GetPrefsResponse::BadRequest(xrpc_error(
+                    "BadIdentity",
+                    "could not resolve the user identity",
+                ));
+            }
+            Err(VerifyError::FailedToVerify(reason)) => {
+                return GetPrefsResponse::ServerError(xrpc_error("FailedToVerify", reason));
+            }
         };
-        log::info!("verified did: {did}/{aud}");
+        log::info!("verified did: {did}");
 
         let storage = self.storage.clone();
 
@@ -123,18 +147,21 @@ impl Xrpc {
             storage
                 .lock()
                 .unwrap()
-                .get(&did, &aud)
+                .get(&did, "net.at-app.pet.ptr.nucleus.getPreferences")
                 .inspect_err(|e| log::error!("failed to get prefs: {e}"))
         })
         .await
         else {
-            return GetBskyPrefsResponse::BadRequest(xrpc_error("boooo", "failed to get from db"));
+            return GetPrefsResponse::ServerError(xrpc_error(
+                "InternalError",
+                "failed to get prefs from db",
+            ));
         };
 
         let Some(serialized) = res else {
-            return GetBskyPrefsResponse::BadRequest(xrpc_error(
+            return GetPrefsResponse::BadRequest(xrpc_error(
                 "NotFound",
-                "could not find prefs for u",
+                "could not find prefs for this identity",
             ));
         };
 
@@ -142,38 +169,55 @@ impl Xrpc {
             Ok(v) => v,
             Err(e) => {
                 log::error!("failed to deserialize prefs: {e}");
-                return GetBskyPrefsResponse::BadRequest(xrpc_error(
-                    "boooo",
+                return GetPrefsResponse::ServerError(xrpc_error(
+                    "InternalError",
                     "failed to deserialize prefs",
                 ));
             }
         };
 
-        GetBskyPrefsResponse::Ok(Json(BskyPrefsObject { preferences }))
+        GetPrefsResponse::Ok(Json(PrefsObject { preferences }))
     }
 
-    /// com.bad-example.pocket.putPreferences
+    /// putPreferences
     ///
-    /// store bluesky prefs
+    /// store preferences
+    ///
+    /// TODO: don't hardcode nucleus
     #[oai(
-        path = "/com.bad-example.pocket.putPreferences",
+        path = "/net.at-app.pet.ptr.nucleus.getPreferences",
         method = "post",
         tag = "ApiTags::Pocket"
     )]
     async fn pocket_put_prefs(
         &self,
         XrpcAuth(auth): XrpcAuth,
-        Json(prefs): Json<BskyPrefsObject>,
-    ) -> PutBskyPrefsResponse {
-        let (did, aud) = match self
+        Json(prefs): Json<PrefsObject>,
+    ) -> PutPrefsResponse {
+        let did = match self
             .verifier
-            .verify("com.bad-example.pocket.putPreferences", &auth.token)
+            .verify(
+                "com.bad-example.pocket.putPreferences",
+                &self.aud,
+                &auth.token,
+            )
             .await
         {
             Ok(d) => d,
-            Err(e) => return PutBskyPrefsResponse::BadRequest(xrpc_error("boooo", e.to_string())),
+            Err(VerifyError::BadToken(reason)) => {
+                return PutPrefsResponse::BadRequest(xrpc_error("BadToken", reason));
+            }
+            Err(VerifyError::ProbablyBadIdentity) => {
+                return PutPrefsResponse::BadRequest(xrpc_error(
+                    "BadIdentity",
+                    "could not resolve the user identity",
+                ));
+            }
+            Err(VerifyError::FailedToVerify(reason)) => {
+                return PutPrefsResponse::ServerError(xrpc_error("FailedToVerify", reason));
+            }
         };
-        log::info!("verified did: {did}/{aud}");
+        log::info!("verified did: {did}");
         log::warn!("received prefs: {prefs:?}");
 
         let storage = self.storage.clone();
@@ -183,15 +227,22 @@ impl Xrpc {
             storage
                 .lock()
                 .unwrap()
-                .put(&did, &aud, &serialized)
+                .put(
+                    &did,
+                    "net.at-app.pet.ptr.nucleus.getPreferences",
+                    &serialized,
+                )
                 .inspect_err(|e| log::error!("failed to insert prefs: {e}"))
         })
         .await
         else {
-            return PutBskyPrefsResponse::BadRequest(xrpc_error("boooo", "failed to put to db"));
+            return PutPrefsResponse::ServerError(xrpc_error(
+                "InternalError",
+                "failed to put prefs to db",
+            ));
         };
 
-        PutBskyPrefsResponse::Ok(PlainText("saved.".to_string()))
+        PutPrefsResponse::Ok(PlainText("saved.".to_string()))
     }
 }
 
@@ -205,32 +256,26 @@ struct AppViewService {
 #[derive(Debug, Clone, Serialize)]
 struct AppViewDoc {
     id: String,
-    service: [AppViewService; 2],
+    service: [AppViewService; 1],
 }
 /// Serve a did document for did:web for this to be an xrpc appview
 fn get_did_doc(domain: &str) -> impl Endpoint + use<> {
     let doc = poem::web::Json(AppViewDoc {
         id: format!("did:web:{domain}"),
-        service: [
-            AppViewService {
-                id: "#pocket_prefs".to_string(),
-                r#type: "PocketPreferences".to_string(),
-                service_endpoint: format!("https://{domain}"),
-            },
-            AppViewService {
-                id: "#bsky_appview".to_string(),
-                r#type: "BlueskyAppview".to_string(),
-                service_endpoint: format!("https://{domain}"),
-            },
-        ],
+        service: [AppViewService {
+            id: "#pocket_prefs".to_string(),
+            r#type: "PocketPreferences".to_string(),
+            service_endpoint: format!("https://{domain}"),
+        }],
     });
     make_sync(move |_| doc.clone())
 }
 
-pub async fn serve(domain: &str, storage: Storage) -> () {
+pub async fn serve(domain: &str, storage: Storage, certs_path: PathBuf) -> () {
     let verifier = TokenVerifier::default();
     let api_service = OpenApiService::new(
         Xrpc {
+            aud: domain.to_string(),
             verifier,
             storage: Arc::new(Mutex::new(storage)),
         },
@@ -260,6 +305,19 @@ pub async fn serve(domain: &str, storage: Storage) -> () {
         .with(CatchPanic::new())
         .with(Tracing);
 
-    let listener = TcpListener::bind("127.0.0.1:3000");
+    // set up letsencrypt
+    // (TODO: make letsencrypt optional)
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("alskfjalksdjf");
+
+    let auto_cert = AutoCert::builder()
+        .directory_url(LETS_ENCRYPT_PRODUCTION)
+        .domain(domain)
+        .cache_path(certs_path)
+        .build()
+        .unwrap();
+
+    let listener = TcpListener::bind("0.0.0.0:443").acme(auto_cert);
     Server::new(listener).name("pocket").run(app).await.unwrap();
 }

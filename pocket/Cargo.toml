@@ -12,6 +12,7 @@ poem = { version = "3.1.12", features = ["acme", "static-files"] }
 poem-openapi = { version = "5.1.16", features = ["scalar"] }
 reqwest = { version = "0.12.22", features = ["json"] }
 rusqlite = "0.37.0"
+rustls = "0.23.35"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.141" }
 thiserror = "2.0.16"

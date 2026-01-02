@@ -4,4 +4,4 @@ mod token;
 
 pub use server::serve;
 pub use storage::Storage;
-pub use token::TokenVerifier;
+pub use token::{TokenVerifier, VerifyError};

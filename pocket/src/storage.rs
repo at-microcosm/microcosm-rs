@@ -20,29 +20,29 @@ impl Storage {
             r#"
             create table prefs (
                 actor text not null,
-                aud   text not null,
+                seg   text not null,
                 pref  text not null,
-                primary key (actor, aud)
+                primary key (actor, seg)
             ) strict"#,
             (),
         )?;
         Ok(me)
     }
-    pub fn put(&self, actor: &str, aud: &str, pref: &str) -> Result<()> {
+    pub fn put(&self, actor: &str, seg: &str, pref: &str) -> Result<()> {
         self.con.execute(
-            r#"insert into prefs (actor, aud, pref)
+            r#"insert into prefs (actor, seg, pref)
                values (?1, ?2, ?3)
                on conflict do update set pref = excluded.pref"#,
-            [actor, aud, pref],
+            [actor, seg, pref],
         )?;
         Ok(())
     }
-    pub fn get(&self, actor: &str, aud: &str) -> Result<Option<String>> {
+    pub fn get(&self, actor: &str, seg: &str) -> Result<Option<String>> {
         self.con
             .query_one(
                 r#"select pref from prefs
-                   where actor = ?1 and aud = ?2"#,
-                [actor, aud],
+                   where actor = ?1 and seg = ?2"#,
+                [actor, seg],
                 |row| row.get(0),
             )
             .optional()
