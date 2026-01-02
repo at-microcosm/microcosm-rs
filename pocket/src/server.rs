@@ -197,7 +197,7 @@ impl Xrpc {
         let did = match self
             .verifier
             .verify(
-                "com.bad-example.pocket.putPreferences",
+                "net.at-app.pet.ptr.nucleus.putPreferences",
                 &self.aud,
                 &auth.token,
             )
