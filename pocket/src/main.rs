@@ -14,7 +14,7 @@ struct Args {
     #[arg(long, action)]
     init_db: bool,
     /// the domain for tls and serving a did doc
-    #[arg(long, default_value = "at-app.net")]
+    #[arg(long, default_value = "pocket.at-app.net")]
     domain: String,
     /// path to cache tls certs
     #[arg(long, default_value = "./certs")]
