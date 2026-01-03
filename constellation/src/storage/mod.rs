@@ -135,6 +135,18 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
     fn get_all_record_counts(&self, _target: &str)
         -> Result<HashMap<String, HashMap<String, u64>>>;
 
+    fn get_many_to_many(
+        &self,
+        target: &str,
+        collection: &str,
+        path: &str,
+        path_to_other: &str,
+        limit: u64,
+        after: Option<String>,
+        filter_dids: &HashSet<Did>,
+        filter_to_targets: &HashSet<String>,
+    ) -> Result<PagedOrderedCollection<(String, Vec<RecordId>), String>>;
+
     fn get_all_counts(
         &self,
         _target: &str,

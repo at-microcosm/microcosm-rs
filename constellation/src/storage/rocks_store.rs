@@ -1122,6 +1122,149 @@ impl LinkReader for RocksStorage {
         }
     }
 
+    fn get_many_to_many(
+        &self,
+        target: &str,
+        collection: &str,
+        path: &str,
+        path_to_other: &str,
+        limit: u64,
+        after: Option<String>,
+        filter_dids: &HashSet<Did>,
+        filter_to_targets: &HashSet<String>,
+    ) -> Result<PagedOrderedCollection<(String, Vec<RecordId>), String>> {
+        let collection = Collection(collection.to_string());
+        let path = RPath(path.to_string());
+
+        let target_key = TargetKey(Target(target.to_string()), collection.clone(), path);
+
+        let after = after.map(|s| s.parse::<u64>().map(TargetId)).transpose()?;
+
+        let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? else {
+            eprintln!("Target not found for {target_key:?}");
+            return Ok(Default::default());
+        };
+
+        let filter_did_ids: HashMap<DidId, bool> = filter_dids
+            .iter()
+            .filter_map(|did| self.did_id_table.get_id_val(&self.db, did).transpose())
+            .collect::<Result<Vec<DidIdValue>>>()?
+            .into_iter()
+            .map(|DidIdValue(id, active)| (id, active))
+            .collect();
+
+        let mut filter_to_target_ids: HashSet<TargetId> = HashSet::new();
+        for t in filter_to_targets {
+            for (_, target_id) in self.iter_targets_for_target(&Target(t.to_string())) {
+                filter_to_target_ids.insert(target_id);
+            }
+        }
+
+        let linkers = self.get_target_linkers(&target_id)?;
+
+        // we want to provide many to many which effectively means that we want to show a specific
+        // list of reords that is linked to by a specific number of linkers
+        let mut grouped_links: BTreeMap<TargetId, Vec<RecordId>> = BTreeMap::new();
+        for (did_id, rkey) in linkers.0 {
+            if did_id.is_empty() {
+                continue;
+            }
+
+            if !filter_did_ids.is_empty() && filter_did_ids.get(&did_id) != Some(&true) {
+                continue;
+            }
+
+            // Make sure the current did is active
+            let Some(did) = self.did_id_table.get_val_from_id(&self.db, did_id.0)? else {
+                eprintln!("failed to look up did from did_id {did_id:?}");
+                continue;
+            };
+            let Some(DidIdValue(_, active)) = self.did_id_table.get_id_val(&self.db, &did)? else {
+                eprintln!("failed to look up did_value from did_id {did_id:?}: {did:?}: data consistency bug?");
+                continue;
+            };
+            if !active {
+                continue;
+            }
+
+            let record_link_key = RecordLinkKey(did_id, collection.clone(), rkey.clone());
+            let Some(targets) = self.get_record_link_targets(&record_link_key)? else {
+                continue;
+            };
+
+            let Some(fwd_target) = targets
+                .0
+                .into_iter()
+                .filter_map(|RecordLinkTarget(rpath, target_id)| {
+                    if rpath.0 == path_to_other
+                        && (filter_to_target_ids.is_empty()
+                            || filter_to_target_ids.contains(&target_id))
+                    {
+                        Some(target_id)
+                    } else {
+                        None
+                    }
+                })
+                .take(1)
+                .next()
+            else {
+                eprintln!("no forward match found.");
+                continue;
+            };
+
+            // pagination logic mirrors what is currently done in get_many_to_many_counts
+            if after.as_ref().map(|a| fwd_target <= *a).unwrap_or(false) {
+                continue;
+            }
+            let page_is_full = grouped_links.len() as u64 >= limit;
+            if page_is_full {
+                let current_max = grouped_links.keys().next_back().unwrap();
+                if fwd_target > *current_max {
+                    continue;
+                }
+            }
+
+            // pagination, continued
+            let mut should_evict = false;
+            let entry = grouped_links.entry(fwd_target.clone()).or_insert_with(|| {
+                should_evict = page_is_full;
+                Vec::default()
+            });
+            entry.push(RecordId {
+                did,
+                collection: collection.0.clone(),
+                rkey: rkey.0,
+            });
+
+            if should_evict {
+                grouped_links.pop_last();
+            }
+        }
+
+        let mut items: Vec<(String, Vec<RecordId>)> = Vec::with_capacity(grouped_links.len());
+        for (fwd_target_id, records) in &grouped_links {
+            let Some(target_key) = self
+                .target_id_table
+                .get_val_from_id(&self.db, fwd_target_id.0)?
+            else {
+                eprintln!("failed to look up target from target_id {fwd_target_id:?}");
+                continue;
+            };
+
+            let target_string = target_key.0 .0;
+
+            items.push((target_string, records.clone()));
+        }
+
+        let next = if grouped_links.len() as u64 >= limit {
+            grouped_links.keys().next_back().map(|k| format!("{}", k.0))
+        } else {
+            None
+        };
+
+        Ok(PagedOrderedCollection { items, next })
+    }
+
     fn get_links(
         &self,
         target: &str,

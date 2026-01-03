@@ -234,6 +234,99 @@ impl LinkReader for MemStorage {
             .len() as u64)
     }
 
+    fn get_many_to_many(
+        &self,
+        target: &str,
+        collection: &str,
+        path: &str,
+        path_to_other: &str,
+        limit: u64,
+        after: Option<String>,
+        filter_dids: &HashSet<Did>,
+        filter_to_targets: &HashSet<String>,
+    ) -> Result<PagedOrderedCollection<(String, Vec<RecordId>), String>> {
+        let empty_res = Ok(PagedOrderedCollection {
+            items: Vec::new(),
+            next: Some("".to_string()),
+        });
+
+        // struct MemStorageData {
+        //     dids: HashMap<Did, bool>,
+        //     targets: HashMap<Target, HashMap<Source, Linkers>>,
+        //     links: HashMap<Did, HashMap<RepoId, Vec<(RecordPath, Target)>>>,
+        // }
+        let data = self.0.lock().unwrap();
+
+        let Some(sources) = data.targets.get(&Target::new(target)) else {
+            return empty_res;
+        };
+        let Some(linkers) = sources.get(&Source::new(collection, path)) else {
+            return empty_res;
+        };
+        let path_to_other = RecordPath::new(path_to_other);
+
+        // Convert filter_to_targets to Target objects for comparison
+        let filter_to_target_objs: HashSet<Target> =
+            HashSet::from_iter(filter_to_targets.iter().map(|s| Target::new(s)));
+
+        let mut grouped_links: HashMap<Target, Vec<RecordId>> = HashMap::new();
+        for (did, rkey) in linkers.iter().flatten().cloned() {
+            // Filter by DID if filter is provided
+            if !filter_dids.is_empty() && !filter_dids.contains(&did) {
+                continue;
+            }
+            if let Some(fwd_target) = data
+                .links
+                .get(&did)
+                .unwrap_or(&HashMap::new())
+                .get(&RepoId {
+                    collection: collection.to_string(),
+                    rkey: rkey.clone(),
+                })
+                .unwrap_or(&Vec::new())
+                .iter()
+                .find_map(|(path, target)| {
+                    if *path == path_to_other
+                        && (filter_to_target_objs.is_empty()
+                            || filter_to_target_objs.contains(target))
+                    {
+                        Some(target)
+                    } else {
+                        None
+                    }
+                })
+            {
+                let record_ids = grouped_links.entry(fwd_target.clone()).or_default();
+                record_ids.push(RecordId {
+                    did,
+                    collection: collection.to_string(),
+                    rkey: rkey.0,
+                });
+            }
+        }
+
+        let mut items = grouped_links
+            .into_iter()
+            .map(|(t, r)| (t.0, r))
+            .collect::<Vec<_>>();
+
+        items.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+        items = items
+            .into_iter()
+            .skip_while(|(t, _)| after.as_ref().map(|a| t <= a).unwrap_or(false))
+            .take(limit as usize)
+            .collect();
+
+        let next = if items.len() as u64 >= limit {
+            items.last().map(|(t, _)| t.clone())
+        } else {
+            None
+        };
+
+        Ok(PagedOrderedCollection { items, next })
+    }
+
     fn get_links(
         &self,
         target: &str,

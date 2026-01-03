@@ -83,6 +83,25 @@
   ) %}
 
 
+  <h3 class="route"><code>GET /xrpc/blue.microcosm.links.getManyToMany</code></h3>
+
+  <p>A list of many-to-many join records linking to a target and a secondary target.</p>
+
+  <h4>Query parameters:</h4>
+
+  <ul>
+    <li><p><code>subject</code>: required, must url-encode. Example: <code>at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r</code></p></li>
+    <li><p><code>source</code>: required. Example: <code>app.bsky.feed.like:subject.uri</code></p></li>
+    <li><p><code>pathToOther</code>: required. Path to the secondary link in the many-to-many record. Example: <code>otherThing.uri</code></p></li>
+    <li><p><code>did</code>: optional, filter links to those from specific users. Include multiple times to filter by multiple users. Example: <code>did=did:plc:vc7f4oafdgxsihk4cry2xpze&did=did:plc:vc7f4oafdgxsihk4cry2xpze</code></p></li>
+    <li><p><code>otherSubject</code>: optional, filter secondary links to specific subjects. Include multiple times to filter by multiple subjects. Example: <code>at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r</code></p></li>
+    <li><p><code>limit</code>: optional. Default: <code>16</code>. Maximum: <code>100</code></p></li>
+  </ul>
+
+  <p style="margin-bottom: 0"><strong>Try it:</strong></p>
+  {% call try_it::get_many_to_many("at://did:plc:a4pqq234yw7fqbddawjo7y35/app.bsky.feed.post/3m237ilwc372e", "app.bsky.feed.like:subject.uri", "reply.parent.uri", [""], [""], 16) %}
+
+
   <h3 class="route"><code>GET /links</code></h3>
 
   <p>A list of records linking to a target.</p>

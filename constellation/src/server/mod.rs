@@ -114,6 +114,17 @@ pub async fn serve<S: LinkReader, A: ToSocketAddrs>(
             }),
         )
         .route(
+            "/xrpc/blue.microcosm.links.getManyToMany",
+            get({
+                let store = store.clone();
+                move |accept, query| async {
+                    spawn_blocking(|| get_many_to_many(accept, query, store))
+                        .await
+                        .map_err(to500)?
+                }
+            }),
+        )
+        .route(
             "/xrpc/blue.microcosm.links.getBacklinks",
             get({
                 let store = store.clone();
@@ -660,6 +671,97 @@ fn get_links(
         accept,
         GetLinkItemsResponse {
             total: paged.total,
+            linking_records: paged.items,
+            cursor,
+            query: (*query).clone(),
+        },
+    ))
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GetManyToManyItemsQuery {
+    subject: String,
+    source: String,
+    /// path to the secondary link in the linking record
+    path_to_other: String,
+    /// filter to linking records (join of the m2m) by these DIDs
+    #[serde(default)]
+    did: Vec<String>,
+    /// filter to specific secondary records
+    #[serde(default)]
+    other_subject: Vec<String>,
+    cursor: Option<OpaqueApiCursor>,
+    #[serde(default = "get_default_cursor_limit")]
+    limit: u64,
+}
+#[derive(Template, Serialize)]
+#[template(path = "get-many-to-many.html.j2")]
+struct GetManyToManyItemsResponse {
+    linking_records: Vec<(String, Vec<RecordId>)>,
+    cursor: Option<OpaqueApiCursor>,
+    #[serde(skip_serializing)]
+    query: GetManyToManyItemsQuery,
+}
+fn get_many_to_many(
+    accept: ExtractAccept,
+    query: axum_extra::extract::Query<GetManyToManyItemsQuery>, // supports multiple param occurrences
+    store: impl LinkReader,
+) -> Result<impl IntoResponse, http::StatusCode> {
+    let after = query
+        .cursor
+        .clone()
+        .map(|oc| ApiKeyedCursor::try_from(oc).map_err(|_| http::StatusCode::BAD_REQUEST))
+        .transpose()?
+        .map(|c| c.next);
+
+    let limit = query.limit;
+    if limit > DEFAULT_CURSOR_LIMIT_MAX {
+        return Err(http::StatusCode::BAD_REQUEST);
+    }
+
+    let filter_dids: HashSet<Did> = HashSet::from_iter(
+        query
+            .did
+            .iter()
+            .map(|d| d.trim())
+            .filter(|d| !d.is_empty())
+            .map(|d| Did(d.to_string())),
+    );
+
+    let filter_other_subjects: HashSet<String> = HashSet::from_iter(
+        query
+            .other_subject
+            .iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+    );
+
+    let Some((collection, path)) = query.source.split_once(':') else {
+        return Err(http::StatusCode::BAD_REQUEST);
+    };
+    let path = format!(".{path}");
+
+    let path_to_other = format!(".{}", query.path_to_other);
+
+    let paged = store
+        .get_many_to_many(
+            &query.subject,
+            collection,
+            &path,
+            &path_to_other,
+            limit,
+            after,
+            &filter_dids,
+            &filter_other_subjects,
+        )
+        .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let cursor = paged.next.map(|next| ApiKeyedCursor { next }.into());
+
+    Ok(acceptable(
+        accept,
+        GetManyToManyItemsResponse {
             linking_records: paged.items,
             cursor,
             query: (*query).clone(),
