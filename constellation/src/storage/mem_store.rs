@@ -1,5 +1,6 @@
 use super::{
-    LinkReader, LinkStorage, PagedAppendingCollection, PagedOrderedCollection, StorageStats,
+    LinkReader, LinkStorage, Order, PagedAppendingCollection, PagedOrderedCollection,
+    StorageStats,
 };
 use crate::{ActionableEvent, CountsByCount, Did, RecordId};
 use anyhow::Result;
@@ -140,7 +141,7 @@ impl LinkReader for MemStorage {
         collection: &str,
         path: &str,
         path_to_other: &str,
-        reverse: bool,
+        order: Order,
         limit: u64,
         after: Option<String>,
         filter_dids: &HashSet<Did>,
@@ -199,11 +200,10 @@ impl LinkReader for MemStorage {
             .iter()
             .map(|(k, (n, u, _))| (k.0.clone(), *n, u.len() as u64))
             .collect();
-        // sort in reverse order to show entries from oldest to newest
-        if reverse {
-            items.sort_by(|a, b| b.cmp(a));
-        } else {
-            items.sort();
+        // Sort based on order: OldestToNewest uses descending order, NewestToOldest uses ascending
+        match order {
+            Order::OldestToNewest => items.sort_by(|a, b| b.cmp(a)),
+            Order::NewestToOldest => items.sort(),
         }
         items = items
             .into_iter()
@@ -250,7 +250,7 @@ impl LinkReader for MemStorage {
         target: &str,
         collection: &str,
         path: &str,
-        reverse: bool,
+        order: Order,
         limit: u64,
         until: Option<u64>,
         filter_dids: &HashSet<Did>,
@@ -293,21 +293,26 @@ impl LinkReader for MemStorage {
         let end: usize;
         let next: Option<u64>;
 
-        if reverse {
-            begin = until.map(|u| (u) as usize).unwrap_or(0);
-            end = std::cmp::min(begin + limit as usize, total);
+        match order {
+            // OldestToNewest: start from the beginning, paginate forward
+            Order::OldestToNewest => {
+                begin = until.map(|u| (u) as usize).unwrap_or(0);
+                end = std::cmp::min(begin + limit as usize, total);
 
-            next = if end < total {
-                Some(end as u64 + 1)
-            } else {
-                None
-            };
-        } else {
-            end = until
-                .map(|u| std::cmp::min(u as usize, total))
-                .unwrap_or(total);
-            begin = end.saturating_sub(limit as usize);
-            next = if begin == 0 { None } else { Some(begin as u64) };
+                next = if end < total {
+                    Some(end as u64 + 1)
+                } else {
+                    None
+                };
+            }
+            // NewestToOldest: start from the end, paginate backward
+            Order::NewestToOldest => {
+                end = until
+                    .map(|u| std::cmp::min(u as usize, total))
+                    .unwrap_or(total);
+                begin = end.saturating_sub(limit as usize);
+                next = if begin == 0 { None } else { Some(begin as u64) };
+            }
         }
 
         let alive = did_rkeys.iter().flatten().count();
@@ -325,7 +330,8 @@ impl LinkReader for MemStorage {
             })
             .collect();
 
-        if reverse {
+        // For OldestToNewest, reverse the items to maintain forward chronological order
+        if order == Order::OldestToNewest {
             items.reverse();
         }
 

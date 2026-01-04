@@ -17,7 +17,7 @@ use tokio::net::{TcpListener, ToSocketAddrs};
 use tokio::task::spawn_blocking;
 use tokio_util::sync::CancellationToken;
 
-use crate::storage::{LinkReader, StorageStats};
+use crate::storage::{LinkReader, Order, StorageStats};
 use crate::{CountsByCount, Did, RecordId};
 
 mod acceptable;
@@ -298,13 +298,19 @@ fn get_many_to_many_counts(
 
     let path_to_other = format!(".{}", query.path_to_other);
 
+    let order = if query.reverse {
+        Order::OldestToNewest
+    } else {
+        Order::NewestToOldest
+    };
+
     let paged = store
         .get_many_to_many_counts(
             &query.subject,
             collection,
             &path,
             &path_to_other,
-            query.reverse,
+            order,
             limit,
             cursor_key,
             &filter_dids,
@@ -461,12 +467,18 @@ fn get_backlinks(
     };
     let path = format!(".{path}");
 
+    let order = if query.reverse {
+        Order::OldestToNewest
+    } else {
+        Order::NewestToOldest
+    };
+
     let paged = store
         .get_links(
             &query.subject,
             collection,
             &path,
-            query.reverse,
+            order,
             limit,
             until,
             &filter_dids,
@@ -566,12 +578,18 @@ fn get_links(
         }
     }
 
+    let order = if query.reverse {
+        Order::OldestToNewest
+    } else {
+        Order::NewestToOldest
+    };
+
     let paged = store
         .get_links(
             &query.target,
             &query.collection,
             &query.path,
-            query.reverse,
+            order,
             limit,
             until,
             &filter_dids,

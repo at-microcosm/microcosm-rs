@@ -11,6 +11,15 @@ pub mod rocks_store;
 #[cfg(feature = "rocks")]
 pub use rocks_store::RocksStorage;
 
+/// Ordering for paginated link queries
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Order {
+    /// Newest links first (default)
+    NewestToOldest,
+    /// Oldest links first
+    OldestToNewest,
+}
+
 #[derive(Debug, PartialEq)]
 pub struct PagedAppendingCollection<T> {
     pub version: (u64, u64), // (collection length, deleted item count) // TODO: change to (total, active)? since dedups isn't "deleted"
@@ -72,7 +81,7 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
         collection: &str,
         path: &str,
         path_to_other: &str,
-        reverse: bool,
+        order: Order,
         limit: u64,
         after: Option<String>,
         filter_dids: &HashSet<Did>,
@@ -88,7 +97,7 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
         target: &str,
         collection: &str,
         path: &str,
-        reverse: bool,
+        order: Order,
         limit: u64,
         until: Option<u64>,
         filter_dids: &HashSet<Did>,
@@ -182,7 +191,7 @@ mod tests {
                 "a.com",
                 "app.t.c",
                 ".abc.uri",
-                false,
+                Order::NewestToOldest,
                 100,
                 None,
                 &HashSet::default()
@@ -686,7 +695,7 @@ mod tests {
                 "a.com",
                 "app.t.c",
                 ".abc.uri",
-                false,
+                Order::NewestToOldest,
                 100,
                 None,
                 &HashSet::default()
@@ -735,7 +744,7 @@ mod tests {
             "a.com",
             "app.t.c",
             ".abc.uri",
-            false,
+            Order::NewestToOldest,
             2,
             None,
             &HashSet::default(),
@@ -774,7 +783,7 @@ mod tests {
             "a.com",
             "app.t.c",
             ".abc.uri",
-            false,
+            Order::NewestToOldest,
             2,
             links.next,
             &HashSet::default(),
@@ -813,7 +822,7 @@ mod tests {
             "a.com",
             "app.t.c",
             ".abc.uri",
-            false,
+            Order::NewestToOldest,
             2,
             links.next,
             &HashSet::default(),
@@ -862,12 +871,12 @@ mod tests {
             )?;
         }
 
-        // Test reverse: true (oldest first)
+        // Test OldestToNewest order (oldest first)
         let links = storage.get_links(
             "a.com",
             "app.t.c",
             ".abc.uri",
-            true,
+            Order::OldestToNewest,
             2,
             None,
             &HashSet::default(),
@@ -892,12 +901,12 @@ mod tests {
                 total: 5,
             }
         );
-        // Test reverse: false (newest first)
+        // Test NewestToOldest order (newest first)
         let links = storage.get_links(
             "a.com",
             "app.t.c",
             ".abc.uri",
-            false,
+            Order::NewestToOldest,
             2,
             None,
             &HashSet::default(),
@@ -930,7 +939,7 @@ mod tests {
             "a.com",
             "app.t.c",
             ".abc.uri",
-            false,
+            Order::NewestToOldest,
             2,
             None,
             &HashSet::from([Did("did:plc:linker".to_string())]),
@@ -964,7 +973,7 @@ mod tests {
             "a.com",
             "app.t.c",
             ".abc.uri",
-            false,
+            Order::NewestToOldest,
             2,
             None,
             &HashSet::from([Did("did:plc:linker".to_string())]),
@@ -987,7 +996,7 @@ mod tests {
             "a.com",
             "app.t.c",
             ".abc.uri",
-            false,
+            Order::NewestToOldest,
             2,
             None,
             &HashSet::from([Did("did:plc:someone-else".to_string())]),
@@ -1035,7 +1044,7 @@ mod tests {
             "a.com",
             "app.t.c",
             ".abc.uri",
-            false,
+            Order::NewestToOldest,
             2,
             None,
             &HashSet::from([Did("did:plc:linker".to_string())]),
@@ -1065,7 +1074,7 @@ mod tests {
             "a.com",
             "app.t.c",
             ".abc.uri",
-            false,
+            Order::NewestToOldest,
             2,
             None,
             &HashSet::from([
@@ -1098,7 +1107,7 @@ mod tests {
             "a.com",
             "app.t.c",
             ".abc.uri",
-            false,
+            Order::NewestToOldest,
             2,
             None,
             &HashSet::from([Did("did:plc:someone-unknown".to_string())]),
@@ -1135,7 +1144,7 @@ mod tests {
             "a.com",
             "app.t.c",
             ".abc.uri",
-            false,
+            Order::NewestToOldest,
             2,
             None,
             &HashSet::default(),
@@ -1164,7 +1173,7 @@ mod tests {
             "a.com",
             "app.t.c",
             ".abc.uri",
-            false,
+            Order::NewestToOldest,
             2,
             links.next,
             &HashSet::default(),
@@ -1213,7 +1222,7 @@ mod tests {
             "a.com",
             "app.t.c",
             ".abc.uri",
-            false,
+            Order::NewestToOldest,
             2,
             None,
             &HashSet::default(),
@@ -1256,7 +1265,7 @@ mod tests {
             "a.com",
             "app.t.c",
             ".abc.uri",
-            false,
+            Order::NewestToOldest,
             2,
             links.next,
             &HashSet::default(),
@@ -1305,7 +1314,7 @@ mod tests {
             "a.com",
             "app.t.c",
             ".abc.uri",
-            false,
+            Order::NewestToOldest,
             2,
             None,
             &HashSet::default(),
@@ -1342,7 +1351,7 @@ mod tests {
             "a.com",
             "app.t.c",
             ".abc.uri",
-            false,
+            Order::NewestToOldest,
             2,
             links.next,
             &HashSet::default(),
@@ -1384,7 +1393,7 @@ mod tests {
             "a.com",
             "app.t.c",
             ".abc.uri",
-            false,
+            Order::NewestToOldest,
             2,
             None,
             &HashSet::default(),
@@ -1417,7 +1426,7 @@ mod tests {
             "a.com",
             "app.t.c",
             ".abc.uri",
-            false,
+            Order::NewestToOldest,
             2,
             links.next,
             &HashSet::default(),
@@ -1499,7 +1508,7 @@ mod tests {
                 "a.b.c",
                 ".d.e",
                 ".f.g",
-                false,
+                Order::NewestToOldest,
                 10,
                 None,
                 &HashSet::new(),
@@ -1543,7 +1552,7 @@ mod tests {
                 "app.t.c",
                 ".abc.uri",
                 ".def.uri",
-                false,
+                Order::NewestToOldest,
                 10,
                 None,
                 &HashSet::new(),
@@ -1643,7 +1652,7 @@ mod tests {
                 "app.t.c",
                 ".abc.uri",
                 ".def.uri",
-                false,
+                Order::NewestToOldest,
                 10,
                 None,
                 &HashSet::new(),
@@ -1660,7 +1669,7 @@ mod tests {
                 "app.t.c",
                 ".abc.uri",
                 ".def.uri",
-                false,
+                Order::NewestToOldest,
                 10,
                 None,
                 &HashSet::from_iter([Did("did:plc:fdsa".to_string())]),
@@ -1677,7 +1686,7 @@ mod tests {
                 "app.t.c",
                 ".abc.uri",
                 ".def.uri",
-                false,
+                Order::NewestToOldest,
                 10,
                 None,
                 &HashSet::new(),
@@ -1753,13 +1762,13 @@ mod tests {
             2,
         )?;
 
-        // Test reverse: false (default order - by target ascending)
+        // Test NewestToOldest order (default order - by target ascending)
         let counts = storage.get_many_to_many_counts(
             "a.com",
             "app.t.c",
             ".abc.uri",
             ".def.uri",
-            false,
+            Order::NewestToOldest,
             10,
             None,
             &HashSet::new(),
@@ -1771,13 +1780,13 @@ mod tests {
         assert_eq!(counts.items[1].0, "c.com");
         assert_eq!(counts.items[2].0, "d.com");
 
-        // Test reverse: true (descending order - by target descending)
+        // Test OldestToNewest order (descending order - by target descending)
         let counts = storage.get_many_to_many_counts(
             "a.com",
             "app.t.c",
             ".abc.uri",
             ".def.uri",
-            true,
+            Order::OldestToNewest,
             10,
             None,
             &HashSet::new(),
