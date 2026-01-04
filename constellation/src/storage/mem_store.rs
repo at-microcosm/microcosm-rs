@@ -247,7 +247,7 @@ impl LinkReader for MemStorage {
     ) -> Result<PagedOrderedCollection<(String, Vec<RecordId>), String>> {
         let empty_res = Ok(PagedOrderedCollection {
             items: Vec::new(),
-            next: Some("".to_string()),
+            next: None,
         });
 
         // struct MemStorageData {
