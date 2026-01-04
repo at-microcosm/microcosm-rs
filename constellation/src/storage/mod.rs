@@ -1683,4 +1683,216 @@ mod tests {
             }
         );
     });
+
+    test_each_storage!(get_m2m_empty, |storage| {
+        assert_eq!(
+            storage.get_many_to_many(
+                "a.com",
+                "a.b.c",
+                ".d.e",
+                ".f.g",
+                10,
+                None,
+                &HashSet::new(),
+                &HashSet::new(),
+            )?,
+            PagedOrderedCollection {
+                items: vec![],
+                next: None,
+            }
+        );
+    });
+
+    test_each_storage!(get_m2m_single, |storage| {
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("b.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("b.com".into()),
+                        path: ".ghi.uri".into(),
+                    },
+                ],
+            },
+            0,
+        )?;
+        assert_eq!(
+            storage.get_many_to_many(
+                "a.com",
+                "app.t.c",
+                ".abc.uri",
+                ".def.uri",
+                10,
+                None,
+                &HashSet::new(),
+                &HashSet::new(),
+            )?,
+            PagedOrderedCollection {
+                items: vec![(
+                    "b.com".to_string(),
+                    vec![RecordId {
+                        did: "did:plc:asdf".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    }]
+                )],
+                next: None,
+            }
+        );
+    });
+
+    test_each_storage!(get_m2m_filters, |storage| {
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("b.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                ],
+            },
+            0,
+        )?;
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf2".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("b.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                ],
+            },
+            1,
+        )?;
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:fdsa".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "fdsa".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("c.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                ],
+            },
+            2,
+        )?;
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:fdsa".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "fdsa2".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("c.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                ],
+            },
+            3,
+        )?;
+
+        // Test without filters - should get all records grouped by secondary target
+        let result = storage.get_many_to_many(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            10,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(result.items.len(), 2);
+        assert_eq!(result.next, None);
+        // Find b.com group
+        let (b_target, b_records) = result.items.iter().find(|(target, _)| target == "b.com").unwrap();
+        assert_eq!(b_target, "b.com");
+        assert_eq!(b_records.len(), 2);
+        assert!(b_records.iter().any(|r| r.did.0 == "did:plc:asdf" && r.rkey == "asdf"));
+        assert!(b_records.iter().any(|r| r.did.0 == "did:plc:asdf" && r.rkey == "asdf2"));
+        // Find c.com group
+        let (c_target, c_records) = result.items.iter().find(|(target, _)| target == "c.com").unwrap();
+        assert_eq!(c_target, "c.com");
+        assert_eq!(c_records.len(), 2);
+        assert!(c_records.iter().any(|r| r.did.0 == "did:plc:fdsa" && r.rkey == "fdsa"));
+        assert!(c_records.iter().any(|r| r.did.0 == "did:plc:fdsa" && r.rkey == "fdsa2"));
+
+        // Test with DID filter - should only get records from did:plc:fdsa
+        let result = storage.get_many_to_many(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            10,
+            None,
+            &HashSet::from_iter([Did("did:plc:fdsa".to_string())]),
+            &HashSet::new(),
+        )?;
+        assert_eq!(result.items.len(), 1);
+        let (target, records) = &result.items[0];
+        assert_eq!(target, "c.com");
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().all(|r| r.did.0 == "did:plc:fdsa"));
+
+        // Test with target filter - should only get records linking to b.com
+        let result = storage.get_many_to_many(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            10,
+            None,
+            &HashSet::new(),
+            &HashSet::from_iter(["b.com".to_string()]),
+        )?;
+        assert_eq!(result.items.len(), 1);
+        let (target, records) = &result.items[0];
+        assert_eq!(target, "b.com");
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().all(|r| r.did.0 == "did:plc:asdf"));
+    });
 }
