@@ -50,6 +50,12 @@ impl RecordId {
     }
 }
 
+#[derive(Debug, PartialEq, Serialize, Deserialize, Clone, Default)]
+pub struct RecordsBySubject {
+    pub subject: String,
+    pub records: Vec<RecordId>,
+}
+
 /// maybe the worst type in this repo, and there are some bad types
 #[derive(Debug, Serialize, PartialEq)]
 pub struct CountsByCount {

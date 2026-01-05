@@ -17,8 +17,8 @@ use tokio::net::{TcpListener, ToSocketAddrs};
 use tokio::task::spawn_blocking;
 use tokio_util::sync::CancellationToken;
 
-use crate::storage::{LinkReader, Order, StorageStats};
-use crate::{CountsByCount, Did, RecordId};
+use crate::storage::{LinkReader, StorageStats};
+use crate::{CountsByCount, Did, RecordId, RecordsBySubject};
 
 mod acceptable;
 mod filters;
@@ -698,7 +698,7 @@ struct GetManyToManyItemsQuery {
 #[derive(Template, Serialize)]
 #[template(path = "get-many-to-many.html.j2")]
 struct GetManyToManyItemsResponse {
-    linking_records: Vec<(String, Vec<RecordId>)>,
+    linking_records: Vec<RecordsBySubject>,
     cursor: Option<OpaqueApiCursor>,
     #[serde(skip_serializing)]
     query: GetManyToManyItemsQuery,

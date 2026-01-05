@@ -23,9 +23,9 @@
 
   <h3>Many-to-many links, most recent first:</h3>
 
-  {% for (target, records) in linking_records %}
-    <h4>Target: <code>{{ target }}</code> <small>(<a href="/links/all?target={{ target|urlencode }}">view all links</a>)</small></h4>
-    {% for record in records %}
+  {% for group in linking_records %}
+    <h4>Target: <code>{{ group.subject }}</code> <small>(<a href="/links/all?target={{ group.subject|urlencode }}">view all links</a>)</small></h4>
+    {% for record in group.records %}
       <pre style="display: block; margin: 1em 2em" class="code"><strong>DID</strong>:        {{ record.did().0 }}
 <strong>Collection</strong>: {{ record.collection }}
 <strong>RKey</strong>:       {{ record.rkey }}

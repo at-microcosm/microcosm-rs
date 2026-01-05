@@ -1,4 +1,4 @@
-use crate::{ActionableEvent, CountsByCount, Did, RecordId};
+use crate::{ActionableEvent, CountsByCount, Did, RecordId, RecordsBySubject};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -145,7 +145,7 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
         after: Option<String>,
         filter_dids: &HashSet<Did>,
         filter_to_targets: &HashSet<String>,
-    ) -> Result<PagedOrderedCollection<(String, Vec<RecordId>), String>>;
+    ) -> Result<PagedOrderedCollection<RecordsBySubject, String>>;
 
     fn get_all_counts(
         &self,
@@ -1740,14 +1740,14 @@ mod tests {
                 &HashSet::new(),
             )?,
             PagedOrderedCollection {
-                items: vec![(
-                    "b.com".to_string(),
-                    vec![RecordId {
+                items: vec![RecordsBySubject {
+                    subject: "b.com".to_string(),
+                    records: vec![RecordId {
                         did: "did:plc:asdf".into(),
                         collection: "app.t.c".into(),
                         rkey: "asdf".into(),
                     }]
-                )],
+                }],
                 next: None,
             }
         );
@@ -1849,17 +1849,33 @@ mod tests {
         assert_eq!(result.items.len(), 2);
         assert_eq!(result.next, None);
         // Find b.com group
-        let (b_target, b_records) = result.items.iter().find(|(target, _)| target == "b.com").unwrap();
-        assert_eq!(b_target, "b.com");
-        assert_eq!(b_records.len(), 2);
-        assert!(b_records.iter().any(|r| r.did.0 == "did:plc:asdf" && r.rkey == "asdf"));
-        assert!(b_records.iter().any(|r| r.did.0 == "did:plc:asdf" && r.rkey == "asdf2"));
+        let b_group = result
+            .items
+            .iter()
+            .find(|group| group.subject == "b.com")
+            .unwrap();
+        assert_eq!(b_group.subject, "b.com");
+        assert_eq!(b_group.records.len(), 2);
+        assert!(b_group.records
+            .iter()
+            .any(|r| r.did.0 == "did:plc:asdf" && r.rkey == "asdf"));
+        assert!(b_group.records
+            .iter()
+            .any(|r| r.did.0 == "did:plc:asdf" && r.rkey == "asdf2"));
         // Find c.com group
-        let (c_target, c_records) = result.items.iter().find(|(target, _)| target == "c.com").unwrap();
-        assert_eq!(c_target, "c.com");
-        assert_eq!(c_records.len(), 2);
-        assert!(c_records.iter().any(|r| r.did.0 == "did:plc:fdsa" && r.rkey == "fdsa"));
-        assert!(c_records.iter().any(|r| r.did.0 == "did:plc:fdsa" && r.rkey == "fdsa2"));
+        let c_group = result
+            .items
+            .iter()
+            .find(|group| group.subject == "c.com")
+            .unwrap();
+        assert_eq!(c_group.subject, "c.com");
+        assert_eq!(c_group.records.len(), 2);
+        assert!(c_group.records
+            .iter()
+            .any(|r| r.did.0 == "did:plc:fdsa" && r.rkey == "fdsa"));
+        assert!(c_group.records
+            .iter()
+            .any(|r| r.did.0 == "did:plc:fdsa" && r.rkey == "fdsa2"));
 
         // Test with DID filter - should only get records from did:plc:fdsa
         let result = storage.get_many_to_many(
@@ -1873,10 +1889,10 @@ mod tests {
             &HashSet::new(),
         )?;
         assert_eq!(result.items.len(), 1);
-        let (target, records) = &result.items[0];
-        assert_eq!(target, "c.com");
-        assert_eq!(records.len(), 2);
-        assert!(records.iter().all(|r| r.did.0 == "did:plc:fdsa"));
+        let group = &result.items[0];
+        assert_eq!(group.subject, "c.com");
+        assert_eq!(group.records.len(), 2);
+        assert!(group.records.iter().all(|r| r.did.0 == "did:plc:fdsa"));
 
         // Test with target filter - should only get records linking to b.com
         let result = storage.get_many_to_many(
@@ -1890,9 +1906,9 @@ mod tests {
             &HashSet::from_iter(["b.com".to_string()]),
         )?;
         assert_eq!(result.items.len(), 1);
-        let (target, records) = &result.items[0];
-        assert_eq!(target, "b.com");
-        assert_eq!(records.len(), 2);
-        assert!(records.iter().all(|r| r.did.0 == "did:plc:asdf"));
+        let group = &result.items[0];
+        assert_eq!(group.subject, "b.com");
+        assert_eq!(group.records.len(), 2);
+        assert!(group.records.iter().all(|r| r.did.0 == "did:plc:asdf"));
     });
 }
