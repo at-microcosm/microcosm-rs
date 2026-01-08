@@ -227,6 +227,8 @@ pub struct MultiSubscribeQuery {
     #[serde(default)]
     pub wanted_subjects: HashSet<String>,
     #[serde(default)]
+    pub wanted_subject_prefixes: HashSet<String>,
+    #[serde(default)]
     pub wanted_subject_dids: HashSet<String>,
     #[serde(default)]
     pub wanted_sources: HashSet<String>,
@@ -241,12 +243,19 @@ struct MultiSubscribeQueryForDocs {
     ///
     /// The at-uri must be url-encoded
     ///
-    /// Pass this parameter multiple times to specify multiple collections, like
+    /// Pass this parameter multiple times to specify multiple subjects, like
     /// `wantedSubjects=[...]&wantedSubjects=[...]`
     pub wanted_subjects: String,
+    /// One or more at-uri, URI, or DID prefixes to receive links about
+    ///
+    /// The uri must be url-encoded
+    ///
+    /// Pass this parameter multiple times to specify multiple prefixes, like
+    /// `wantedSubjectPrefixes=[...]&wantedSubjectPrefixes=[...]`
+    pub wanted_subject_prefixes: String,
     /// One or more DIDs to receive links about
     ///
-    /// Pass this parameter multiple times to specify multiple collections
+    /// Pass this parameter multiple times to specify multiple subjects
     pub wanted_subject_dids: String,
     /// One or more link sources to receive links about
     ///
