@@ -1,10 +1,10 @@
 {
   "lexicon": 1,
-  "id": "blue.microcosm.links.getManyToManyCounts",
+  "id": "blue.microcosm.links.getManyToMany",
   "defs": {
     "main": {
       "type": "query",
-      "description": "count many-to-many relationships with secondary link paths",
+      "description": "Get records that link to a primary subject, grouped by the secondary subjects they also reference",
       "parameters": {
         "type": "params",
         "required": ["subject", "source", "pathToOther"],
@@ -16,7 +16,7 @@
           },
           "source": {
             "type": "string",
-            "description": "collection and path specification for the primary link"
+            "description": "collection and path specification for the primary link (e.g., 'app.bsky.feed.like:subject.uri')"
           },
           "pathToOther": {
             "type": "string",
@@ -50,13 +50,13 @@
         "encoding": "application/json",
         "schema": {
           "type": "object",
-          "required": ["counts_by_other_subject"],
+          "required": ["linking_records"],
           "properties": {
-            "counts_by_other_subject": {
+            "linking_records": {
               "type": "array",
               "items": {
                 "type": "ref",
-                "ref": "#countBySubject"
+                "ref": "#recordsBySubject"
               }
             },
             "cursor": {
@@ -67,21 +67,41 @@
         }
       }
     },
-    "countBySubject": {
+    "recordsBySubject": {
       "type": "object",
-      "required": ["subject", "total", "distinct"],
+      "required": ["subject", "records"],
       "properties": {
         "subject": {
           "type": "string",
-          "description": "the secondary subject being counted"
+          "description": "the secondary subject that these records link to"
         },
-        "total": {
-          "type": "integer",
-          "description": "total number of links to this subject"
+        "records": {
+          "type": "array",
+          "items": {
+            "type": "ref",
+            "ref": "#linkRecord"
+          }
+        }
+      }
+    },
+    "linkRecord": {
+      "type": "object",
+      "required": ["did", "collection", "rkey"],
+      "description": "A record identifier consisting of a DID, collection, and record key",
+      "properties": {
+        "did": {
+          "type": "string",
+          "format": "did",
+          "description": "the DID of the linking record's repository"
         },
-        "distinct": {
-          "type": "integer",
-          "description": "number of distinct DIDs linking to this subject"
+        "collection": {
+          "type": "string",
+          "format": "nsid",
+          "description": "the collection of the linking record"
+        },
+        "rkey": {
+          "type": "string",
+          "format": "record-key"
         }
       }
     }

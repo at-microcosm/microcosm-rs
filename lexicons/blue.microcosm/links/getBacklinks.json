@@ -7,10 +7,7 @@
       "description": "a list of records linking to any record, identity, or uri",
       "parameters": {
         "type": "params",
-        "required": [
-          "subject",
-          "source"
-        ],
+        "required": ["subject", "source"],
         "properties": {
           "subject": {
             "type": "string",
@@ -42,10 +39,7 @@
         "encoding": "application/json",
         "schema": {
           "type": "object",
-          "required": [
-            "total",
-            "records"
-          ],
+          "required": ["total", "records"],
           "properties": {
             "total": {
               "type": "integer",
@@ -68,11 +62,7 @@
     },
     "linkRecord": {
       "type": "object",
-      "required": [
-        "did",
-        "collection",
-        "rkey"
-      ],
+      "required": ["did", "collection", "rkey"],
       "properties": {
         "did": {
           "type": "string",
