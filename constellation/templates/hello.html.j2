@@ -82,7 +82,6 @@
     25,
   ) %}
 
-
   <h3 class="route"><code>GET /xrpc/blue.microcosm.links.getManyToMany</code></h3>
 
   <p>A list of many-to-many join records linking to a target and a secondary target.</p>
@@ -101,6 +100,21 @@
   <p style="margin-bottom: 0"><strong>Try it:</strong></p>
   {% call try_it::get_many_to_many("at://did:plc:a4pqq234yw7fqbddawjo7y35/app.bsky.feed.post/3m237ilwc372e", "app.bsky.feed.like:subject.uri", "reply.parent.uri", [""], [""], 16) %}
 
+  <h3 class="route"><code>GET /xrpc/blue.microcosm.links.getDistinct</code></h3>
+
+  <p>A list of distinct DIDs (identities) with links to a target.</p>
+
+  <h4>Query parameters:</h4>
+
+  <ul>
+    <li><code>subject</code>: required, must url-encode. The target being linked to. Example: <code>did:plc:vc7f4oafdgxsihk4cry2xpze</code> or <code>at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r</code></li>
+    <li><code>source</code>: required. Collection and path specification for the primary link. Example: <code>app.bsky.feed.like:subject.uri</code></li>
+    <li><code>limit</code>: optional. Number of results to return. Default: <code>16</code>. Maximum: <code>100</code></li>
+    <li><code>cursor</code>: optional, see Definitions.</li>
+  </ul>
+
+  <p style="margin-bottom: 0"><strong>Try it:</strong></p>
+  {% call try_it::get_distinct("at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r", "app.bsky.feed.like:subject.uri") %}
 
   <h3 class="route"><code>GET /links</code></h3>
 
@@ -122,7 +136,6 @@
 
   <p style="margin-bottom: 0"><strong>Try it:</strong></p>
   {% call try_it::links("at://did:plc:a4pqq234yw7fqbddawjo7y35/app.bsky.feed.post/3m237ilwc372e", "app.bsky.feed.like", ".subject.uri", [""], 16) %}
-
 
   <h3 class="route"><code>GET /links/distinct-dids</code></h3>
 

@@ -142,6 +142,16 @@
   </form>
 {% endmacro %}
 
+{% macro get_distinct(subject, source) %}
+<form method="get" action="/xrpc/blue.microcosm.links.getDistinct">
+	<pre class="code"><strong>GET</strong> /xrpc/blue.microcosm.links.getDistinct
+    	?subject=	<input type="text" name="subject" value="{{ subject }}" placeholder="subject" />
+        &source=	<input type="text" name="source" value="{{ source }}" placeholder="source" />
+		<button type="submit">get links</button>
+	</pre>
+</form>
+{% endmacro %}
+
 {% macro links_count(target, collection, path) %}
   <form method="get" action="/links/count">
 <pre class="code"><strong>GET</strong> /links/count

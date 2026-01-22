@@ -507,8 +507,8 @@ impl LinkReader for MemStorage {
     ) -> Result<HashMap<String, HashMap<String, CountsByCount>>> {
         let data = self.0.lock().unwrap();
         let mut out: HashMap<String, HashMap<String, CountsByCount>> = HashMap::new();
-        if let Some(asdf) = data.targets.get(&Target::new(target)) {
-            for (Source { collection, path }, linkers) in asdf {
+        if let Some(source_linker_pairs) = data.targets.get(&Target::new(target)) {
+            for (Source { collection, path }, linkers) in source_linker_pairs {
                 let records = linkers.iter().flatten().count() as u64;
                 let distinct_dids = linkers
                     .iter()

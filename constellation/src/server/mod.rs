@@ -136,6 +136,7 @@ pub async fn serve<S: LinkReader, A: ToSocketAddrs>(
             }),
         )
         .route(
+            // deprecated
             "/links",
             get({
                 let store = store.clone();
@@ -146,6 +147,18 @@ pub async fn serve<S: LinkReader, A: ToSocketAddrs>(
                 }
             }),
         )
+        .route(
+            "/xrpc/blue.microcosm.links.getDistinct",
+            get({
+                let store = store.clone();
+                move |accept, query| async {
+                    spawn_blocking(|| get_distinct(accept, query, store))
+                        .await
+                        .map_err(to500)?
+                }
+            }),
+        )
+        // deprecated
         .route(
             "/links/distinct-dids",
             get({
@@ -169,6 +182,7 @@ pub async fn serve<S: LinkReader, A: ToSocketAddrs>(
                 }
             }),
         )
+        // deprecated
         .route(
             "/links/all",
             get({
@@ -612,6 +626,7 @@ struct GetLinkItemsResponse {
     #[serde(skip_serializing)]
     query: GetLinkItemsQuery,
 }
+#[deprecated]
 fn get_links(
     accept: ExtractAccept,
     query: axum_extra::extract::Query<GetLinkItemsQuery>, // supports multiple param occurrences
@@ -776,6 +791,72 @@ fn get_many_to_many(
         accept,
         GetManyToManyItemsResponse {
             items,
+            cursor,
+            query: (*query).clone(),
+        },
+    ))
+}
+
+#[derive(Clone, Deserialize)]
+struct GetDistinctItemsQuery {
+    subject: String,
+    source: String,
+    cursor: Option<OpaqueApiCursor>,
+    limit: Option<u64>,
+    // TODO: allow reverse (er, forward) order as well
+}
+#[derive(Template, Serialize)]
+#[template(path = "get-distinct.html.j2")]
+struct GetDistinctItemsResponse {
+    // what does staleness mean?
+    // - new links have appeared. would be nice to offer a `since` cursor to fetch these. and/or,
+    // - links have been deleted. hmm.
+    total: u64,
+    linking_dids: Vec<Did>,
+    cursor: Option<OpaqueApiCursor>,
+    #[serde(skip_serializing)]
+    query: GetDistinctItemsQuery,
+}
+fn get_distinct(
+    accept: ExtractAccept,
+    query: Query<GetDistinctItemsQuery>,
+    store: impl LinkReader,
+) -> Result<impl IntoResponse, http::StatusCode> {
+    let until = query
+        .cursor
+        .clone()
+        .map(|oc| ApiCursor::try_from(oc).map_err(|_| http::StatusCode::BAD_REQUEST))
+        .transpose()?
+        .map(|c| c.next);
+
+    let limit = query.limit.unwrap_or(DEFAULT_CURSOR_LIMIT);
+    if limit > DEFAULT_CURSOR_LIMIT_MAX {
+        return Err(http::StatusCode::BAD_REQUEST);
+    }
+
+    let Some((collection, path)) = query.source.split_once(':') else {
+        return Err(http::StatusCode::BAD_REQUEST);
+    };
+    let path = format!(".{path}");
+
+    let paged = store
+        .get_distinct_dids(&query.subject, &collection, &path, limit, until)
+        .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let cursor = paged.next.map(|next| {
+        ApiCursor {
+            version: paged.version,
+            next,
+        }
+        .into()
+    });
+
+    Ok(acceptable(
+        accept,
+        GetDistinctItemsResponse {
+            total: paged.total,
+            linking_dids: paged.items,
+>>>>>>> 7a3e36b (Add getDistinct XRPC equivalent to REST /links/distinct-dids)
             cursor,
             query: (*query).clone(),
         },

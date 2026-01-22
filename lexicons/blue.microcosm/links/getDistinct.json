@@ -1,10 +1,10 @@
 {
   "lexicon": 1,
-  "id": "blue.microcosm.links.getBacklinks",
+  "id": "blue.microcosm.links.getDistinct",
   "defs": {
     "main": {
       "type": "query",
-      "description": "a list of records linking to any record, identity, or uri",
+      "description": "a list of distinct dids with a specific records linking to a target at a specified path",
       "parameters": {
         "type": "params",
         "required": ["subject", "source"],
@@ -17,14 +17,6 @@
           "source": {
             "type": "string",
             "description": "collection and path specification (e.g., 'app.bsky.feed.like:subject.uri')"
-          },
-          "did": {
-            "type": "array",
-            "description": "filter links to those from specific users",
-            "items": {
-              "type": "string",
-              "format": "did"
-            }
           },
           "limit": {
             "type": "integer",
@@ -39,17 +31,17 @@
         "encoding": "application/json",
         "schema": {
           "type": "object",
-          "required": ["total", "records"],
+          "required": ["total", "linking_dids"],
           "properties": {
             "total": {
               "type": "integer",
               "description": "total number of matching links"
             },
-            "records": {
+            "linking_dids": {
               "type": "array",
               "items": {
-                "type": "ref",
-                "ref": "#linkRecord"
+                "type": "string",
+                "format": "did"
               }
             },
             "cursor": {
@@ -57,27 +49,6 @@
               "description": "pagination cursor"
             }
           }
-        }
-      }
-    },
-    "linkRecord": {
-      "type": "object",
-      "required": ["did", "collection", "rkey"],
-      "properties": {
-        "did": {
-          "type": "string",
-          "format": "did",
-          "description": "the DID of the linking record's repository"
-        },
-        "collection": {
-          "type": "string",
-          "format": "nsid",
-          "description": "the collection of the linking record"
-        },
-        "rkey": {
-          "type": "string",
-          "format": "record-key",
-          "description": "the record key of the linking record"
         }
       }
     }

@@ -1,0 +1,49 @@
+{% extends "base.html.j2" %}
+{% import "try-it-macros.html.j2" as try_it %}
+
+{% block title %}DIDs{% endblock %}
+{% block description %}Distinct DIDs with records in {{ query.source }} linking to {{ query.subject }} {% endblock %}
+
+{% block content %}
+
+  {% call try_it::get_distinct(query.subject, query.source) %}
+
+  <h2>
+    Distinct DIDs with links to <code>{{ query.subject }}</code> from <code>{{ query.source }}</code>
+    {% if let Some(browseable_uri) = query.subject|to_browseable %}
+      <small style="font-weight: normal; font-size: 1rem"><a href="{{ browseable_uri }}">browse record</a></small>
+    {% endif %}
+  </h2>
+
+  <p><strong>{{ total|human_number }} distinct DIDs</strong> with links to <code>{{ query.subject }}</code> from <code>{{ query.source }}</code></p>
+
+  <ul>
+    <li>See direct backlinks at <code>/xrpc/blue.microcosm.links.getBacklinks</code>: <a href="/xrpc/blue.microcosm.links.getBacklinks?subject={{ query.subject|urlencode }}&source={{ query.source|urlencode }}">/xrpc/blue.microcosm.links.getBacklinks?subject={{ query.subject }}&source={{ query.source }}</a></li>
+    <li>See all links to this target at <code>/links/all</code>: <a href="/links/all?target={{ query.subject|urlencode }}">/links/all?target={{ query.subject }}</a></li>
+  </ul>
+
+  <h3>DIDs, most recent first:</h3>
+
+  {% for did in linking_dids %}
+    <pre style="display: block; margin: 1em 2em" class="code"><strong>DID</strong>: {{ did.0 }}
+  -> see <a href="/links/all?target={{ did.0|urlencode }}">links to this DID</a>
+  -> browse <a href="https://pdsls.dev/at://{{ did.0 }}">this DID record</a></pre>
+  {% endfor %}
+
+  {% if let Some(c) = cursor %}
+    <form method="get" action="/xrpc/blue.microcosm.links.getDistinct">
+      <input type="hidden" name="subject" value="{{ query.subject }}" />
+      <input type="hidden" name="source" value="{{ query.source }}" />
+      <input type="hidden" name="cursor" value={{ c|json|safe }} />
+      <button type="submit">next page&hellip;</button>
+    </form>
+  {% else %}
+    <button disabled><em>end of results</em></button>
+  {% endif %}
+
+  <details>
+    <summary>Raw JSON response</summary>
+    <pre class="code">{{ self|tojson }}</pre>
+  </details>
+
+{% endblock %}
