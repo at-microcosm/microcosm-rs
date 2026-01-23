@@ -70,7 +70,6 @@
     <li><p><code>did</code>: optional, filter links to those from specific users. Include multiple times to filter by multiple users. Example: <code>did=did:plc:vc7f4oafdgxsihk4cry2xpze&did=did:plc:vc7f4oafdgxsihk4cry2xpze</code></p></li>
     <li><p><code>otherSubject</code>: optional, filter secondary links to specific subjects. Include multiple times to filter by multiple users. Example: <code>at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r</code></p></li>
     <li><p><code>limit</code>: optional. Default: <code>16</code>. Maximum: <code>100</code></p></li>
-    <li><p><code>reverse</code>: optional, return links in reverse order. Default: <code>false</code></p></li>
   </ul>
 
   <p style="margin-bottom: 0"><strong>Try it:</strong></p>
@@ -81,7 +80,6 @@
     [""],
     [""],
     25,
-    false,
   ) %}
 
 
@@ -104,7 +102,7 @@
   </ul>
 
   <p style="margin-bottom: 0"><strong>Try it:</strong></p>
-  {% call try_it::links("at://did:plc:a4pqq234yw7fqbddawjo7y35/app.bsky.feed.post/3m237ilwc372e", "app.bsky.feed.like", ".subject.uri", [""], 16, false) %}
+  {% call try_it::links("at://did:plc:a4pqq234yw7fqbddawjo7y35/app.bsky.feed.post/3m237ilwc372e", "app.bsky.feed.like", ".subject.uri", [""], 16) %}
 
 
   <h3 class="route"><code>GET /links/distinct-dids</code></h3>

@@ -1,6 +1,5 @@
 use super::{
-    LinkReader, LinkStorage, Order, PagedAppendingCollection, PagedOrderedCollection,
-    StorageStats,
+    LinkReader, LinkStorage, Order, PagedAppendingCollection, PagedOrderedCollection, StorageStats,
 };
 use crate::{ActionableEvent, CountsByCount, Did, RecordId};
 use anyhow::Result;
@@ -141,7 +140,6 @@ impl LinkReader for MemStorage {
         collection: &str,
         path: &str,
         path_to_other: &str,
-        order: Order,
         limit: u64,
         after: Option<String>,
         filter_dids: &HashSet<Did>,
@@ -159,10 +157,8 @@ impl LinkReader for MemStorage {
         let filter_to_targets: HashSet<Target> =
             HashSet::from_iter(filter_to_targets.iter().map(|s| Target::new(s)));
 
-        // the last type field here acts as an index to allow keeping track of the order in which
-        // we encountred single elements
-        let mut grouped_counts: HashMap<Target, (u64, HashSet<Did>, usize)> = HashMap::new();
-        for (idx, (did, rkey)) in linkers.iter().flatten().cloned().enumerate() {
+        let mut grouped_counts: HashMap<Target, (u64, HashSet<Did>)> = HashMap::new();
+        for (did, rkey) in linkers.iter().flatten().cloned() {
             if !filter_dids.is_empty() && !filter_dids.contains(&did) {
                 continue;
             }
@@ -188,23 +184,16 @@ impl LinkReader for MemStorage {
                 .take(1)
                 .next()
             {
-                let e =
-                    grouped_counts
-                        .entry(fwd_target.clone())
-                        .or_insert((0, HashSet::new(), idx));
+                let e = grouped_counts.entry(fwd_target.clone()).or_default();
                 e.0 += 1;
                 e.1.insert(did.clone());
             }
         }
         let mut items: Vec<(String, u64, u64)> = grouped_counts
             .iter()
-            .map(|(k, (n, u, _))| (k.0.clone(), *n, u.len() as u64))
+            .map(|(k, (n, u))| (k.0.clone(), *n, u.len() as u64))
             .collect();
-        // Sort based on order: OldestToNewest uses descending order, NewestToOldest uses ascending
-        match order {
-            Order::OldestToNewest => items.sort_by(|a, b| b.cmp(a)),
-            Order::NewestToOldest => items.sort(),
-        }
+        items.sort();
         items = items
             .into_iter()
             .skip_while(|(t, _, _)| after.as_ref().map(|a| t <= a).unwrap_or(false))

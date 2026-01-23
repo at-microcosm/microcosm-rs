@@ -239,9 +239,6 @@ struct GetManyToManyCountsQuery {
     /// Set the max number of links to return per page of results
     #[serde(default = "get_default_cursor_limit")]
     limit: u64,
-    /// Allow returning links in reverse order (default: false)
-    #[serde(default)]
-    reverse: bool,
 }
 #[derive(Serialize)]
 struct OtherSubjectCount {
@@ -298,19 +295,12 @@ fn get_many_to_many_counts(
 
     let path_to_other = format!(".{}", query.path_to_other);
 
-    let order = if query.reverse {
-        Order::OldestToNewest
-    } else {
-        Order::NewestToOldest
-    };
-
     let paged = store
         .get_many_to_many_counts(
             &query.subject,
             collection,
             &path,
             &path_to_other,
-            order,
             limit,
             cursor_key,
             &filter_dids,
@@ -527,9 +517,6 @@ struct GetLinkItemsQuery {
     from_dids: Option<String>, // comma separated: gross
     #[serde(default = "get_default_cursor_limit")]
     limit: u64,
-    /// Allow returning links in reverse order (default: false)
-    #[serde(default)]
-    reverse: bool,
 }
 #[derive(Template, Serialize)]
 #[template(path = "links.html.j2")]
@@ -578,18 +565,12 @@ fn get_links(
         }
     }
 
-    let order = if query.reverse {
-        Order::OldestToNewest
-    } else {
-        Order::NewestToOldest
-    };
-
     let paged = store
         .get_links(
             &query.target,
             &query.collection,
             &query.path,
-            order,
+            Order::NewestToOldest,
             limit,
             until,
             &filter_dids,
@@ -622,6 +603,7 @@ struct GetDidItemsQuery {
     path: String,
     cursor: Option<OpaqueApiCursor>,
     limit: Option<u64>,
+    // TODO: allow reverse (er, forward) order as well
 }
 #[derive(Template, Serialize)]
 #[template(path = "dids.html.j2")]

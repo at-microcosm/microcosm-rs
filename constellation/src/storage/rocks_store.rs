@@ -941,7 +941,6 @@ impl LinkReader for RocksStorage {
         collection: &str,
         path: &str,
         path_to_other: &str,
-        order: Order,
         limit: u64,
         after: Option<String>,
         filter_dids: &HashSet<Did>,
@@ -1072,7 +1071,6 @@ impl LinkReader for RocksStorage {
         }
 
         let mut items: Vec<(String, u64, u64)> = Vec::with_capacity(grouped_counts.len());
-
         for (target_id, (n, dids)) in &grouped_counts {
             let Some(target) = self
                 .target_id_table
@@ -1082,12 +1080,6 @@ impl LinkReader for RocksStorage {
                 continue;
             };
             items.push((target.0 .0, *n, dids.len() as u64));
-        }
-
-        // Sort based on order: OldestToNewest uses descending order, NewestToOldest uses ascending
-        match order {
-            Order::OldestToNewest => items.sort_by(|a, b| b.cmp(a)), // descending
-            Order::NewestToOldest => items.sort(),                    // ascending
         }
 
         let next = if grouped_counts.len() as u64 >= limit {

@@ -81,7 +81,6 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
         collection: &str,
         path: &str,
         path_to_other: &str,
-        order: Order,
         limit: u64,
         after: Option<String>,
         filter_dids: &HashSet<Did>,
@@ -1508,7 +1507,6 @@ mod tests {
                 "a.b.c",
                 ".d.e",
                 ".f.g",
-                Order::NewestToOldest,
                 10,
                 None,
                 &HashSet::new(),
@@ -1552,7 +1550,6 @@ mod tests {
                 "app.t.c",
                 ".abc.uri",
                 ".def.uri",
-                Order::NewestToOldest,
                 10,
                 None,
                 &HashSet::new(),
@@ -1652,7 +1649,6 @@ mod tests {
                 "app.t.c",
                 ".abc.uri",
                 ".def.uri",
-                Order::NewestToOldest,
                 10,
                 None,
                 &HashSet::new(),
@@ -1669,7 +1665,6 @@ mod tests {
                 "app.t.c",
                 ".abc.uri",
                 ".def.uri",
-                Order::NewestToOldest,
                 10,
                 None,
                 &HashSet::from_iter([Did("did:plc:fdsa".to_string())]),
@@ -1686,7 +1681,6 @@ mod tests {
                 "app.t.c",
                 ".abc.uri",
                 ".def.uri",
-                Order::NewestToOldest,
                 10,
                 None,
                 &HashSet::new(),
@@ -1697,105 +1691,5 @@ mod tests {
                 next: None,
             }
         );
-    });
-
-    test_each_storage!(get_m2m_counts_reverse_order, |storage| {
-        // Create links from different DIDs to different targets
-        storage.push(
-            &ActionableEvent::CreateLinks {
-                record_id: RecordId {
-                    did: "did:plc:user1".into(),
-                    collection: "app.t.c".into(),
-                    rkey: "post1".into(),
-                },
-                links: vec![
-                    CollectedLink {
-                        target: Link::Uri("a.com".into()),
-                        path: ".abc.uri".into(),
-                    },
-                    CollectedLink {
-                        target: Link::Uri("b.com".into()),
-                        path: ".def.uri".into(),
-                    },
-                ],
-            },
-            0,
-        )?;
-        storage.push(
-            &ActionableEvent::CreateLinks {
-                record_id: RecordId {
-                    did: "did:plc:user2".into(),
-                    collection: "app.t.c".into(),
-                    rkey: "post1".into(),
-                },
-                links: vec![
-                    CollectedLink {
-                        target: Link::Uri("a.com".into()),
-                        path: ".abc.uri".into(),
-                    },
-                    CollectedLink {
-                        target: Link::Uri("c.com".into()),
-                        path: ".def.uri".into(),
-                    },
-                ],
-            },
-            1,
-        )?;
-        storage.push(
-            &ActionableEvent::CreateLinks {
-                record_id: RecordId {
-                    did: "did:plc:user3".into(),
-                    collection: "app.t.c".into(),
-                    rkey: "post1".into(),
-                },
-                links: vec![
-                    CollectedLink {
-                        target: Link::Uri("a.com".into()),
-                        path: ".abc.uri".into(),
-                    },
-                    CollectedLink {
-                        target: Link::Uri("d.com".into()),
-                        path: ".def.uri".into(),
-                    },
-                ],
-            },
-            2,
-        )?;
-
-        // Test NewestToOldest order (default order - by target ascending)
-        let counts = storage.get_many_to_many_counts(
-            "a.com",
-            "app.t.c",
-            ".abc.uri",
-            ".def.uri",
-            Order::NewestToOldest,
-            10,
-            None,
-            &HashSet::new(),
-            &HashSet::new(),
-        )?;
-        assert_eq!(counts.items.len(), 3);
-        // Should be sorted by target in ascending order (alphabetical)
-        assert_eq!(counts.items[0].0, "b.com");
-        assert_eq!(counts.items[1].0, "c.com");
-        assert_eq!(counts.items[2].0, "d.com");
-
-        // Test OldestToNewest order (descending order - by target descending)
-        let counts = storage.get_many_to_many_counts(
-            "a.com",
-            "app.t.c",
-            ".abc.uri",
-            ".def.uri",
-            Order::OldestToNewest,
-            10,
-            None,
-            &HashSet::new(),
-            &HashSet::new(),
-        )?;
-        assert_eq!(counts.items.len(), 3);
-        // Should be sorted by target in descending order (reverse alphabetical)
-        assert_eq!(counts.items[0].0, "d.com");
-        assert_eq!(counts.items[1].0, "c.com");
-        assert_eq!(counts.items[2].0, "b.com");
     });
 }
