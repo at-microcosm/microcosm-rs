@@ -1796,7 +1796,7 @@ dependencies = [
 [[package]]
 name = "fjall"
 version = "2.11.2"
-source = "git+https://github.com/fjall-rs/fjall.git#42d811f7c8cc9004407d520d37d2a1d8d246c03d"
+source = "git+https://github.com/fjall-rs/fjall.git?rev=fb229572bb7d1d6966a596994dc1708e47ec57d8#fb229572bb7d1d6966a596994dc1708e47ec57d8"
 dependencies = [
  "byteorder",
  "byteview",
@@ -6049,7 +6049,7 @@ dependencies = [
  "clap",
  "dropshot",
  "env_logger",
- "fjall 2.11.2 (git+https://github.com/fjall-rs/fjall.git)",
+ "fjall 2.11.2 (git+https://github.com/fjall-rs/fjall.git?rev=fb229572bb7d1d6966a596994dc1708e47ec57d8)",
  "getrandom 0.3.3",
  "http",
  "jetstream",
