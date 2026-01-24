@@ -20,7 +20,7 @@ pub enum Order {
     OldestToNewest,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub struct PagedAppendingCollection<T> {
     pub version: (u64, u64), // (collection length, deleted item count) // TODO: change to (total, active)? since dedups isn't "deleted"
     pub items: Vec<T>,
@@ -28,15 +28,35 @@ pub struct PagedAppendingCollection<T> {
     pub total: u64,
 }
 
+impl<T> PagedAppendingCollection<T> {
+    pub(crate) fn empty() -> Self {
+        Self {
+            version: (0, 0),
+            items: Vec::new(),
+            next: None,
+            total: 0,
+        }
+    }
+}
+
 /// A paged collection whose keys are sorted instead of indexed
 ///
 /// this has weaker guarantees than PagedAppendingCollection: it might
 /// return a totally consistent snapshot. but it should avoid duplicates
 /// and each page should at least be internally consistent.
-#[derive(Debug, PartialEq, Default)]
+#[derive(Debug, PartialEq)]
 pub struct PagedOrderedCollection<T, K: Ord> {
     pub items: Vec<T>,
     pub next: Option<K>,
+}
+
+impl<T, K: Ord> PagedOrderedCollection<T, K> {
+    pub(crate) fn empty() -> Self {
+        Self {
+            items: Vec::new(),
+            next: None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
@@ -91,6 +111,7 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
 
     fn get_distinct_did_count(&self, target: &str, collection: &str, path: &str) -> Result<u64>;
 
+    #[allow(clippy::too_many_arguments)]
     fn get_links(
         &self,
         target: &str,
@@ -195,21 +216,11 @@ mod tests {
                 None,
                 &HashSet::default()
             )?,
-            PagedAppendingCollection {
-                version: (0, 0),
-                items: vec![],
-                next: None,
-                total: 0,
-            }
+            PagedAppendingCollection::empty()
         );
         assert_eq!(
             storage.get_distinct_dids("a.com", "app.t.c", ".abc.uri", 100, None)?,
-            PagedAppendingCollection {
-                version: (0, 0),
-                items: vec![],
-                next: None,
-                total: 0,
-            }
+            PagedAppendingCollection::empty()
         );
         assert_eq!(storage.get_all_counts("bad-example.com")?, HashMap::new());
         assert_eq!(
@@ -739,16 +750,16 @@ mod tests {
                 0,
             )?;
         }
-        let links = storage.get_links(
-            "a.com",
-            "app.t.c",
-            ".abc.uri",
-            Order::NewestToOldest,
-            2,
-            None,
-            &HashSet::default(),
-        )?;
-        let dids = storage.get_distinct_dids("a.com", "app.t.c", ".abc.uri", 2, None)?;
+
+        let sub = "a.com";
+        let col = "app.t.c";
+        let path = ".abc.uri";
+        let order = Order::NewestToOldest;
+        let dids_filter = HashSet::new();
+
+        // --- --- round one! --- --- //
+        // all backlinks
+        let links = storage.get_links(sub, col, path, order, 2, None, &dids_filter)?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -756,12 +767,12 @@ mod tests {
                 items: vec![
                     RecordId {
                         did: "did:plc:asdf-5".into(),
-                        collection: "app.t.c".into(),
+                        collection: col.into(),
                         rkey: "asdf".into(),
                     },
                     RecordId {
                         did: "did:plc:asdf-4".into(),
-                        collection: "app.t.c".into(),
+                        collection: col.into(),
                         rkey: "asdf".into(),
                     },
                 ],
@@ -769,6 +780,8 @@ mod tests {
                 total: 5,
             }
         );
+        // distinct dids
+        let dids = storage.get_distinct_dids(sub, col, path, 2, None)?;
         assert_eq!(
             dids,
             PagedAppendingCollection {
@@ -778,16 +791,10 @@ mod tests {
                 total: 5,
             }
         );
-        let links = storage.get_links(
-            "a.com",
-            "app.t.c",
-            ".abc.uri",
-            Order::NewestToOldest,
-            2,
-            links.next,
-            &HashSet::default(),
-        )?;
-        let dids = storage.get_distinct_dids("a.com", "app.t.c", ".abc.uri", 2, dids.next)?;
+
+        // --- --- round two! --- --- //
+        // all backlinks
+        let links = storage.get_links(sub, col, path, order, 2, links.next, &dids_filter)?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -795,12 +802,12 @@ mod tests {
                 items: vec![
                     RecordId {
                         did: "did:plc:asdf-3".into(),
-                        collection: "app.t.c".into(),
+                        collection: col.into(),
                         rkey: "asdf".into(),
                     },
                     RecordId {
                         did: "did:plc:asdf-2".into(),
-                        collection: "app.t.c".into(),
+                        collection: col.into(),
                         rkey: "asdf".into(),
                     },
                 ],
@@ -808,6 +815,8 @@ mod tests {
                 total: 5,
             }
         );
+        // distinct dids
+        let dids = storage.get_distinct_dids(sub, col, path, 2, dids.next)?;
         assert_eq!(
             dids,
             PagedAppendingCollection {
@@ -817,29 +826,25 @@ mod tests {
                 total: 5,
             }
         );
-        let links = storage.get_links(
-            "a.com",
-            "app.t.c",
-            ".abc.uri",
-            Order::NewestToOldest,
-            2,
-            links.next,
-            &HashSet::default(),
-        )?;
-        let dids = storage.get_distinct_dids("a.com", "app.t.c", ".abc.uri", 2, dids.next)?;
+
+        // --- --- round three! --- --- //
+        // all backlinks
+        let links = storage.get_links(sub, col, path, order, 2, links.next, &dids_filter)?;
         assert_eq!(
             links,
             PagedAppendingCollection {
                 version: (5, 0),
                 items: vec![RecordId {
                     did: "did:plc:asdf-1".into(),
-                    collection: "app.t.c".into(),
+                    collection: col.into(),
                     rkey: "asdf".into(),
                 },],
                 next: None,
                 total: 5,
             }
         );
+        // distinct dids
+        let dids = storage.get_distinct_dids(sub, col, path, 2, dids.next)?;
         assert_eq!(
             dids,
             PagedAppendingCollection {
@@ -849,6 +854,7 @@ mod tests {
                 total: 5,
             }
         );
+
         assert_stats(storage.get_stats()?, 5..=5, 1..=1, 5..=5);
     });
 
@@ -943,15 +949,7 @@ mod tests {
             None,
             &HashSet::from([Did("did:plc:linker".to_string())]),
         )?;
-        assert_eq!(
-            links,
-            PagedAppendingCollection {
-                version: (0, 0),
-                items: vec![],
-                next: None,
-                total: 0,
-            }
-        );
+        assert_eq!(links, PagedAppendingCollection::empty());
 
         storage.push(
             &ActionableEvent::CreateLinks {
@@ -1000,15 +998,7 @@ mod tests {
             None,
             &HashSet::from([Did("did:plc:someone-else".to_string())]),
         )?;
-        assert_eq!(
-            links,
-            PagedAppendingCollection {
-                version: (0, 0),
-                items: vec![],
-                next: None,
-                total: 0,
-            }
-        );
+        assert_eq!(links, PagedAppendingCollection::empty());
 
         storage.push(
             &ActionableEvent::CreateLinks {
@@ -1111,15 +1101,7 @@ mod tests {
             None,
             &HashSet::from([Did("did:plc:someone-unknown".to_string())]),
         )?;
-        assert_eq!(
-            links,
-            PagedAppendingCollection {
-                version: (0, 0),
-                items: vec![],
-                next: None,
-                total: 0,
-            }
-        );
+        assert_eq!(links, PagedAppendingCollection::empty());
     });
 
     test_each_storage!(get_links_exact_multiple, |storage| {
@@ -1512,10 +1494,7 @@ mod tests {
                 &HashSet::new(),
                 &HashSet::new(),
             )?,
-            PagedOrderedCollection {
-                items: vec![],
-                next: None,
-            }
+            PagedOrderedCollection::empty()
         );
     });
 
