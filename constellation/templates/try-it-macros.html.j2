@@ -7,7 +7,8 @@
   &did=        <input type="text" name="did" value="{{ did }}" placeholder="did:plc:..." />{% endif %}{% endfor %}
   <span id="did-placeholder"></span>             <button id="add-did">+ did filter</button>
   &limit=      <input type="number" name="limit" value="{{ limit }}" max="100" placeholder="100" />
-  &reverse=    <input type="checkbox" name="reverse" value="true" checked="false"><button type="submit">get links</button></pre>
+  &reverse=    <input type="checkbox" name="reverse" value="true" {% if reverse %}checked{% endif %}>
+               <button type="submit">get links</button></pre>
   </form>
   <script>
     const addDidButton = document.getElementById('add-did');
