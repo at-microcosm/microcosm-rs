@@ -17,7 +17,7 @@ use tokio::net::{TcpListener, ToSocketAddrs};
 use tokio::task::spawn_blocking;
 use tokio_util::sync::CancellationToken;
 
-use crate::storage::{LinkReader, StorageStats};
+use crate::storage::{LinkReader, Order, StorageStats};
 use crate::{CountsByCount, Did, RecordId};
 
 mod acceptable;
@@ -409,7 +409,9 @@ struct GetBacklinksQuery {
     /// Set the max number of links to return per page of results
     #[serde(default = "get_default_cursor_limit")]
     limit: u64,
-    // TODO: allow reverse (er, forward) order as well
+    /// Allow returning links in reverse order (default: false)
+    #[serde(default)]
+    reverse: bool,
 }
 #[derive(Template, Serialize)]
 #[template(path = "get-backlinks.html.j2")]
@@ -455,11 +457,18 @@ fn get_backlinks(
     };
     let path = format!(".{path}");
 
+    let order = if query.reverse {
+        Order::OldestToNewest
+    } else {
+        Order::NewestToOldest
+    };
+
     let paged = store
         .get_links(
             &query.subject,
             collection,
             &path,
+            order,
             limit,
             until,
             &filter_dids,
@@ -508,7 +517,6 @@ struct GetLinkItemsQuery {
     from_dids: Option<String>, // comma separated: gross
     #[serde(default = "get_default_cursor_limit")]
     limit: u64,
-    // TODO: allow reverse (er, forward) order as well
 }
 #[derive(Template, Serialize)]
 #[template(path = "links.html.j2")]
@@ -562,6 +570,7 @@ fn get_links(
             &query.target,
             &query.collection,
             &query.path,
+            Order::NewestToOldest,
             limit,
             until,
             &filter_dids,

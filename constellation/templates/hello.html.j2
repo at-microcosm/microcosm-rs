@@ -49,10 +49,12 @@
     <li><p><code>source</code>: required. Example: <code>app.bsky.feed.like:subject.uri</code></p></li>
     <li><p><code>did</code>: optional, filter links to those from specific users. Include multiple times to filter by multiple users. Example: <code>did=did:plc:vc7f4oafdgxsihk4cry2xpze&did=did:plc:vc7f4oafdgxsihk4cry2xpze</code></p></li>
     <li><p><code>limit</code>: optional. Default: <code>16</code>. Maximum: <code>100</code></p></li>
+    <li><p><code>reverse</code>: optional, return links in reverse order. Default: <code>false</code></p></li>
   </ul>
 
   <p style="margin-bottom: 0"><strong>Try it:</strong></p>
-  {% call try_it::get_backlinks("at://did:plc:a4pqq234yw7fqbddawjo7y35/app.bsky.feed.post/3m237ilwc372e", "app.bsky.feed.like:subject.uri", [""], 16) %}
+  {% call
+  try_it::get_backlinks("at://did:plc:a4pqq234yw7fqbddawjo7y35/app.bsky.feed.post/3m237ilwc372e", "app.bsky.feed.like:subject.uri", [""], 16, false) %}
 
 
   <h3 class="route"><code>GET /xrpc/blue.microcosm.links.getManyToManyCounts</code></h3>
@@ -96,6 +98,7 @@
     <li><p><code>did</code>: optional, filter links to those from specific users. Include multiple times to filter by multiple users. Example: <code>did=did:plc:vc7f4oafdgxsihk4cry2xpze&did=did:plc:vc7f4oafdgxsihk4cry2xpze</code></p></li>
     <li><p><code>from_dids</code> [deprecated]: optional. Use <code>did</code> instead. Example: <code>from_dids=did:plc:vc7f4oafdgxsihk4cry2xpze,did:plc:vc7f4oafdgxsihk4cry2xpze</code></p></li>
     <li><p><code>limit</code>: optional. Default: <code>16</code>. Maximum: <code>100</code></p></li>
+    <li><p><code>reverse</code>: optional, return links in reverse order. Default: <code>false</code></p></li>
   </ul>
 
   <p style="margin-bottom: 0"><strong>Try it:</strong></p>
