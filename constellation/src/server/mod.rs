@@ -66,6 +66,7 @@ where
                 }
             }),
         )
+        // deprecated
         .route(
             "/links/count",
             get({
