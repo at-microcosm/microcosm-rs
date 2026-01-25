@@ -6,7 +6,7 @@
 
 {% block content %}
 
-  {% call try_it::get_distinct(query.subject, query.source) %}
+  {% call try_it::get_backlink_dids(query.subject, query.source) %}
 
   <h2>
     Distinct DIDs with links to <code>{{ query.subject }}</code> from <code>{{ query.source }}</code>
@@ -31,7 +31,7 @@
   {% endfor %}
 
   {% if let Some(c) = cursor %}
-    <form method="get" action="/xrpc/blue.microcosm.links.getDistinct">
+    <form method="get" action="/xrpc/blue.microcosm.links.getBacklinkDids">
       <input type="hidden" name="subject" value="{{ query.subject }}" />
       <input type="hidden" name="source" value="{{ query.source }}" />
       <input type="hidden" name="cursor" value={{ c|json|safe }} />

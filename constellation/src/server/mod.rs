@@ -148,11 +148,11 @@ pub async fn serve<S: LinkReader, A: ToSocketAddrs>(
             }),
         )
         .route(
-            "/xrpc/blue.microcosm.links.getDistinct",
+            "/xrpc/blue.microcosm.links.getBacklinkDids",
             get({
                 let store = store.clone();
                 move |accept, query| async {
-                    spawn_blocking(|| get_distinct(accept, query, store))
+                    spawn_blocking(|| get_backlink_dids(accept, query, store))
                         .await
                         .map_err(to500)?
                 }
@@ -806,8 +806,8 @@ struct GetDistinctItemsQuery {
     // TODO: allow reverse (er, forward) order as well
 }
 #[derive(Template, Serialize)]
-#[template(path = "get-distinct.html.j2")]
-struct GetDistinctItemsResponse {
+#[template(path = "get-backlink-dids.html.j2")]
+struct GetBacklinkDidsResponse {
     // what does staleness mean?
     // - new links have appeared. would be nice to offer a `since` cursor to fetch these. and/or,
     // - links have been deleted. hmm.
@@ -815,11 +815,11 @@ struct GetDistinctItemsResponse {
     linking_dids: Vec<Did>,
     cursor: Option<OpaqueApiCursor>,
     #[serde(skip_serializing)]
-    query: GetDistinctItemsQuery,
+    query: GetBacklinkDidsQuery,
 }
-fn get_distinct(
+fn get_backlink_dids(
     accept: ExtractAccept,
-    query: Query<GetDistinctItemsQuery>,
+    query: Query<GetBacklinkDidsQuery>,
     store: impl LinkReader,
 ) -> Result<impl IntoResponse, http::StatusCode> {
     let until = query
@@ -853,7 +853,7 @@ fn get_distinct(
 
     Ok(acceptable(
         accept,
-        GetDistinctItemsResponse {
+        GetBacklinkDidsResponse {
             total: paged.total,
             linking_dids: paged.items,
 >>>>>>> 7a3e36b (Add getDistinct XRPC equivalent to REST /links/distinct-dids)

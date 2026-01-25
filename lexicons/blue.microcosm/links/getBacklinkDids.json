@@ -1,6 +1,6 @@
 {
   "lexicon": 1,
-  "id": "blue.microcosm.links.getDistinct",
+  "id": "blue.microcosm.links.getBacklinkDids",
   "defs": {
     "main": {
       "type": "query",
