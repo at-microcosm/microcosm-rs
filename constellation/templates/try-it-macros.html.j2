@@ -104,14 +104,11 @@
   </form>
 {% endmacro %}
 
-{% macro get_counts(subject, source) %}
-  <form method="get" action="/xrpc/blue.microcosm.links.getCounts">
-    <pre class="code">
-	  <strong>GET</strong> /xrpc/blue.microcosm.links.getCounts
-      ?subject=     <input type="text" name="subject" value="{{ subject }}" placeholder="subject" />
-      &source=      <input type="text" name="source" value="{{ source }}" placeholder="source" /> 
-      <button type="submit">get links count</button>
-	</pre>
+{% macro get_backlinks_count(subject, source) %}
+  <form method="get" action="/xrpc/blue.microcosm.links.getBacklinksCount">
+    <pre class="code"><strong>GET</strong> /xrpc/blue.microcosm.links.getBacklinksCount
+  ?subject=     <input type="text" name="subject" value="{{ subject }}" placeholder="subject" />
+  &source=      <input type="text" name="source" value="{{ source }}" placeholder="source" /> <button type="submit">get links count</button></pre>
   </form>
 {% endmacro %}
 

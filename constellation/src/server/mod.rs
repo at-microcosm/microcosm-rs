@@ -78,11 +78,11 @@ where
             }),
         )
         .route(
-            "/xrpc/blue.microcosm.links.getCounts",
+            "/xrpc/blue.microcosm.links.getBacklinksCount",
             get({
                 let store = store.clone();
                 move |accept, query| async {
-                    spawn_blocking(|| get_counts(accept, query, store))
+                    spawn_blocking(|| get_backlink_counts(accept, query, store))
                         .await
                         .map_err(to500)?
                 }
@@ -378,13 +378,13 @@ struct GetItemsCountQuery {
     source: String,
 }
 #[derive(Template, Serialize)]
-#[template(path = "get-counts.html.j2")]
+#[template(path = "get-backlinks-count.html.j2")]
 struct GetItemsCountResponse {
     total: u64,
     #[serde(skip_serializing)]
     query: GetItemsCountQuery,
 }
-fn get_counts(
+fn get_backlink_counts(
     accept: ExtractAccept,
     query: axum_extra::extract::Query<GetItemsCountQuery>,
     store: impl LinkReader,
