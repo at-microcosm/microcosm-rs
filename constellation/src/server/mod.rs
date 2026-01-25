@@ -17,7 +17,7 @@ use tokio::net::{TcpListener, ToSocketAddrs};
 use tokio::task::spawn_blocking;
 use tokio_util::sync::CancellationToken;
 
-use crate::storage::{LinkReader, StorageStats};
+use crate::storage::{LinkReader, Order, StorageStats};
 use crate::{CountsByCount, Did, RecordId, RecordsBySubject};
 
 mod acceptable;

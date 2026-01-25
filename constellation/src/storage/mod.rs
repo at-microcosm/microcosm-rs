@@ -1856,10 +1856,12 @@ mod tests {
             .unwrap();
         assert_eq!(b_group.subject, "b.com");
         assert_eq!(b_group.records.len(), 2);
-        assert!(b_group.records
+        assert!(b_group
+            .records
             .iter()
             .any(|r| r.did.0 == "did:plc:asdf" && r.rkey == "asdf"));
-        assert!(b_group.records
+        assert!(b_group
+            .records
             .iter()
             .any(|r| r.did.0 == "did:plc:asdf" && r.rkey == "asdf2"));
         // Find c.com group
@@ -1870,10 +1872,12 @@ mod tests {
             .unwrap();
         assert_eq!(c_group.subject, "c.com");
         assert_eq!(c_group.records.len(), 2);
-        assert!(c_group.records
+        assert!(c_group
+            .records
             .iter()
             .any(|r| r.did.0 == "did:plc:fdsa" && r.rkey == "fdsa"));
-        assert!(c_group.records
+        assert!(c_group
+            .records
             .iter()
             .any(|r| r.did.0 == "did:plc:fdsa" && r.rkey == "fdsa2"));
 

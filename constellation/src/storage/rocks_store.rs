@@ -1142,7 +1142,7 @@ impl LinkReader for RocksStorage {
 
         let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? else {
             eprintln!("Target not found for {target_key:?}");
-            return Ok(Default::default());
+            return Ok(PagedOrderedCollection::empty());
         };
 
         let filter_did_ids: HashMap<DidId, bool> = filter_dids
