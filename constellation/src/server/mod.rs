@@ -66,12 +66,24 @@ where
                 }
             }),
         )
+        // deprecated
         .route(
             "/links/count",
             get({
                 let store = store.clone();
                 move |accept, query| async {
                     spawn_blocking(|| count_links(accept, query, store))
+                        .await
+                        .map_err(to500)?
+                }
+            }),
+        )
+        .route(
+            "/xrpc/blue.microcosm.links.getBacklinksCount",
+            get({
+                let store = store.clone();
+                move |accept, query| async {
+                    spawn_blocking(|| get_backlink_counts(accept, query, store))
                         .await
                         .map_err(to500)?
                 }
@@ -343,6 +355,7 @@ struct GetLinksCountResponse {
     #[serde(skip_serializing)]
     query: GetLinksCountQuery,
 }
+#[deprecated]
 fn count_links(
     accept: ExtractAccept,
     query: Query<GetLinksCountQuery>,
@@ -354,6 +367,40 @@ fn count_links(
     Ok(acceptable(
         accept,
         GetLinksCountResponse {
+            total,
+            query: (*query).clone(),
+        },
+    ))
+}
+
+#[derive(Clone, Deserialize)]
+struct GetItemsCountQuery {
+    subject: String,
+    source: String,
+}
+#[derive(Template, Serialize)]
+#[template(path = "get-backlinks-count.html.j2")]
+struct GetItemsCountResponse {
+    total: u64,
+    #[serde(skip_serializing)]
+    query: GetItemsCountQuery,
+}
+fn get_backlink_counts(
+    accept: ExtractAccept,
+    query: axum_extra::extract::Query<GetItemsCountQuery>,
+    store: impl LinkReader,
+) -> Result<impl IntoResponse, http::StatusCode> {
+    let Some((collection, path)) = query.source.split_once(':') else {
+        return Err(http::StatusCode::BAD_REQUEST);
+    };
+    let path = format!(".{path}");
+    let total = store
+        .get_count(&query.subject, collection, &path)
+        .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(acceptable(
+        accept,
+        GetItemsCountResponse {
             total,
             query: (*query).clone(),
         },
@@ -668,6 +715,7 @@ struct GetAllLinksResponse {
     #[serde(skip_serializing)]
     query: GetAllLinksQuery,
 }
+#[deprecated]
 fn count_all_links(
     accept: ExtractAccept,
     query: Query<GetAllLinksQuery>,
