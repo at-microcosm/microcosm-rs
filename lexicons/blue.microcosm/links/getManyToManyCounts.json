@@ -7,7 +7,11 @@
       "description": "count many-to-many relationships with secondary link paths",
       "parameters": {
         "type": "params",
-        "required": ["subject", "source", "pathToOther"],
+        "required": [
+          "subject",
+          "source",
+          "pathToOther"
+        ],
         "properties": {
           "subject": {
             "type": "string",
@@ -50,7 +54,9 @@
         "encoding": "application/json",
         "schema": {
           "type": "object",
-          "required": ["counts_by_other_subject"],
+          "required": [
+            "counts_by_other_subject"
+          ],
           "properties": {
             "counts_by_other_subject": {
               "type": "array",
@@ -69,7 +75,11 @@
     },
     "countBySubject": {
       "type": "object",
-      "required": ["subject", "total", "distinct"],
+      "required": [
+        "subject",
+        "total",
+        "distinct"
+      ],
       "properties": {
         "subject": {
           "type": "string",
