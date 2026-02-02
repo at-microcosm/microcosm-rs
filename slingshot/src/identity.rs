@@ -26,7 +26,10 @@ use atrium_identity::{
     handle::{AtprotoHandleResolver, AtprotoHandleResolverConfig, DnsTxtResolver},
 };
 use atrium_oauth::DefaultHttpClient; // it's probably not worth bringing all of atrium_oauth for this but
-use foyer::{BlockEngineConfig, DeviceBuilder, FileDeviceBuilder, HybridCache, HybridCacheBuilder};
+use foyer::{
+    BlockEngineConfig, DeviceBuilder, FsDeviceBuilder, HybridCache, HybridCacheBuilder,
+    PsyncIoEngineConfig,
+};
 use serde::{Deserialize, Serialize};
 use time::UtcDateTime;
 
@@ -202,7 +205,7 @@ impl Identity {
             http_client: http_client.clone(),
         });
 
-        let device = FileDeviceBuilder::new(cache_dir)
+        let device = FsDeviceBuilder::new(cache_dir)
             .with_capacity(disk_gb * 2_usize.pow(30))
             .build()?;
         let engine = BlockEngineConfig::new(device).with_block_size(2_usize.pow(20)); // note: this does limit the max cached item size
@@ -212,6 +215,7 @@ impl Identity {
             .memory(memory_mb * 2_usize.pow(20))
             .with_weighter(|k: &IdentityKey, v: &IdentityVal| k.weight() + v.weight())
             .storage()
+            .with_io_engine_config(PsyncIoEngineConfig::default())
             .with_engine_config(engine)
             .build()
             .await?;

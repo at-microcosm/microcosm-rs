@@ -713,7 +713,7 @@ pub async fn serve(
     .server(if let Some(ref h) = acme_domain {
         format!("https://{h}")
     } else {
-        "http://localhost:3000".to_string()
+        format!("http://{bind}") // yeah should probably fix this for reverse-proxy scenarios but it's ok for dev for now
     })
     .url_prefix("/xrpc")
     .contact(

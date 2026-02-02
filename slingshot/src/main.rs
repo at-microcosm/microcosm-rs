@@ -4,6 +4,7 @@ use metrics_exporter_prometheus::PrometheusBuilder;
 use slingshot::{
     Identity, Repo, consume, error::MainTaskError, firehose_cache, healthcheck, serve,
 };
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -30,7 +31,7 @@ struct Args {
     /// cannot be used with acme -- if you need ipv6 see --acme-ipv6
     #[arg(long, env = "SLINGSHOT_BIND")]
     #[clap(default_value = "0.0.0.0:8080")]
-    bind: std::net::SocketAddr,
+    bind: SocketAddr,
     /// memory cache size in megabytes for records
     #[arg(long, env = "SLINGSHOT_RECORD_CACHE_MEMORY_MB")]
     #[clap(default_value_t = 64)]
