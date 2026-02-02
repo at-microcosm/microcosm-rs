@@ -565,33 +565,34 @@ impl Xrpc {
 
         let fr = self
             .cache
-            .fetch(at_uri.clone(), {
+            .get_or_fetch(&at_uri, {
                 let cid = cid.clone();
                 let repo_api = self.repo.clone();
-                || async move {
-                    repo_api
-                        .get_record(&did, &collection, &rkey, &cid)
-                        .await
-                        .map_err(|e| foyer::Error::Other(Box::new(e)))
-                }
+                || async move { repo_api.get_record(&did, &collection, &rkey, &cid).await }
             })
             .await;
 
         let entry = match fr {
             Ok(e) => e,
-            Err(foyer::Error::Other(e)) => {
-                let record_error = match e.downcast::<RecordError>() {
-                    Ok(e) => e,
-                    Err(e) => {
-                        log::error!("error (foyer other) getting cache entry, {e:?}");
+            Err(e) if e.kind() == foyer::ErrorKind::External => {
+                let record_error = match e.source().map(|s| s.downcast_ref::<RecordError>()) {
+                    Some(Some(e)) => e,
+                    other => {
+                        if other.is_none() {
+                            log::error!("external error without a source. wat? {e}");
+                        } else {
+                            log::error!("downcast to RecordError failed...? {e}");
+                        }
                         return GetRecordResponse::ServerError(xrpc_error(
                             "ServerError",
                             "sorry, something went wrong",
                         ));
                     }
                 };
-                let RecordError::UpstreamBadRequest(ErrorResponseObject { error, message }) =
-                    *record_error
+                let RecordError::UpstreamBadRequest(ErrorResponseObject {
+                    ref error,
+                    ref message,
+                }) = *record_error
                 else {
                     log::error!("RecordError getting cache entry, {record_error:?}");
                     return GetRecordResponse::ServerError(xrpc_error(

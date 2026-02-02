@@ -10,7 +10,7 @@ atrium-identity = { git = "https://github.com/uniphil/atrium.git", branch = "fix
 atrium-oauth = { git = "https://github.com/uniphil/atrium.git", branch = "fix/resolve-handle-https-accept-whitespace" }
 clap = { workspace = true }
 ctrlc = "3.4.7"
-foyer = { version = "0.18.0", features = ["serde"] }
+foyer = { version = "0.22.3", features = ["serde"] }
 hickory-resolver = "0.25.2"
 jetstream = { path = "../jetstream", features = ["metrics"] }
 links = { path = "../links" }

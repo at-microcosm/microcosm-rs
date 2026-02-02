@@ -42,6 +42,17 @@ pub enum CachedRecord {
     Deleted,
 }
 
+impl CachedRecord {
+    pub(crate) fn weight(&self) -> usize {
+        let wrapping = std::mem::size_of::<Self>();
+        let inner = match self {
+            CachedRecord::Found(RawRecord { record, .. }) => std::mem::size_of_val(record.as_str()),
+            _ => 0,
+        };
+        wrapping + inner
+    }
+}
+
 //////// upstream record fetching
 
 #[derive(Deserialize)]

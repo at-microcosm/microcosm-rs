@@ -1,5 +1,5 @@
 use crate::CachedRecord;
-use foyer::{DirectFsDeviceOptions, Engine, HybridCache, HybridCacheBuilder};
+use foyer::{BlockEngineConfig, DeviceBuilder, FileDeviceBuilder, HybridCache, HybridCacheBuilder};
 use std::path::Path;
 
 pub async fn firehose_cache(
@@ -7,18 +7,24 @@ pub async fn firehose_cache(
     memory_mb: usize,
     disk_gb: usize,
 ) -> Result<HybridCache<String, CachedRecord>, String> {
+    let device = FileDeviceBuilder::new(cache_dir)
+        .with_capacity(disk_gb * 2_usize.pow(30))
+        .build()
+        .map_err(|e| format!("foyer device setup error: {e}"))?;
+
+    let engine = BlockEngineConfig::new(device).with_block_size(16 * 2_usize.pow(20)); // note: this does limit the max cached item size
+
     let cache = HybridCacheBuilder::new()
         .with_name("firehose")
         .memory(memory_mb * 2_usize.pow(20))
-        .with_weighter(|k: &String, v| k.len() + std::mem::size_of_val(v))
-        .storage(Engine::large())
-        .with_device_options(
-            DirectFsDeviceOptions::new(cache_dir)
-                .with_capacity(disk_gb * 2_usize.pow(30))
-                .with_file_size(16 * 2_usize.pow(20)), // note: this does limit the max cached item size (records should be max 1mb cbor, bit bigger json)
-        )
+        .with_weighter(|k: &String, v: &CachedRecord| {
+            std::mem::size_of_val(k.as_str()) + v.weight()
+        })
+        .storage()
+        .with_engine_config(engine)
         .build()
         .await
         .map_err(|e| format!("foyer setup error: {e:?}"))?;
+
     Ok(cache)
 }

@@ -26,7 +26,7 @@ use atrium_identity::{
     handle::{AtprotoHandleResolver, AtprotoHandleResolverConfig, DnsTxtResolver},
 };
 use atrium_oauth::DefaultHttpClient; // it's probably not worth bringing all of atrium_oauth for this but
-use foyer::{DirectFsDeviceOptions, Engine, HybridCache, HybridCacheBuilder};
+use foyer::{BlockEngineConfig, DeviceBuilder, FileDeviceBuilder, HybridCache, HybridCacheBuilder};
 use serde::{Deserialize, Serialize};
 use time::UtcDateTime;
 
@@ -40,6 +40,16 @@ enum IdentityKey {
     Did(Did),
 }
 
+impl IdentityKey {
+    fn weight(&self) -> usize {
+        let s = match self {
+            IdentityKey::Handle(h) => h.as_str(),
+            IdentityKey::Did(d) => d.as_str(),
+        };
+        std::mem::size_of::<Self>() + std::mem::size_of_val(s)
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct IdentityVal(UtcDateTime, IdentityData);
 
@@ -48,6 +58,22 @@ enum IdentityData {
     NotFound,
     Did(Did),
     Doc(PartialMiniDoc),
+}
+
+impl IdentityVal {
+    fn weight(&self) -> usize {
+        let wrapping = std::mem::size_of::<Self>();
+        let inner = match &self.1 {
+            IdentityData::NotFound => 0,
+            IdentityData::Did(d) => std::mem::size_of_val(d.as_str()),
+            IdentityData::Doc(d) => {
+                std::mem::size_of_val(d.unverified_handle.as_str())
+                    + std::mem::size_of_val(d.pds.as_str())
+                    + std::mem::size_of_val(d.signing_key.as_str())
+            }
+        };
+        wrapping + inner
+    }
 }
 
 /// partial representation of a com.bad-example.identity mini atproto doc
@@ -176,16 +202,17 @@ impl Identity {
             http_client: http_client.clone(),
         });
 
+        let device = FileDeviceBuilder::new(cache_dir)
+            .with_capacity(disk_gb * 2_usize.pow(30))
+            .build()?;
+        let engine = BlockEngineConfig::new(device).with_block_size(2_usize.pow(20)); // note: this does limit the max cached item size
+
         let cache = HybridCacheBuilder::new()
             .with_name("identity")
             .memory(memory_mb * 2_usize.pow(20))
-            .with_weighter(|k, v| std::mem::size_of_val(k) + std::mem::size_of_val(v))
-            .storage(Engine::small())
-            .with_device_options(
-                DirectFsDeviceOptions::new(cache_dir)
-                    .with_capacity(disk_gb * 2_usize.pow(30)) // TODO: configurable (1GB to have something)
-                    .with_file_size(2_usize.pow(20)), // note: this does limit the max cached item size!
-            )
+            .with_weighter(|k: &IdentityKey, v: &IdentityVal| k.weight() + v.weight())
+            .storage()
+            .with_engine_config(engine)
             .build()
             .await?;
 
@@ -235,7 +262,7 @@ impl Identity {
         let key = IdentityKey::Handle(handle.clone());
         let entry = self
             .cache
-            .fetch(key.clone(), {
+            .get_or_fetch(&key, {
                 let handle = handle.clone();
                 let resolver = self.handle_resolver.clone();
                 || async move {
@@ -244,10 +271,10 @@ impl Identity {
                         Err(atrium_identity::Error::NotFound) => {
                             Ok(IdentityVal(UtcDateTime::now(), IdentityData::NotFound))
                         }
-                        Err(other) => Err(foyer::Error::Other(Box::new({
+                        Err(other) => {
                             log::debug!("other error resolving handle: {other:?}");
-                            IdentityError::ResolutionFailed(other)
-                        }))),
+                            Err(IdentityError::ResolutionFailed(other))
+                        }
                     }
                 }
             })
@@ -283,7 +310,7 @@ impl Identity {
         let key = IdentityKey::Did(did.clone());
         let entry = self
             .cache
-            .fetch(key.clone(), {
+            .get_or_fetch(&key, {
                 let did = did.clone();
                 let resolver = self.did_resolver.clone();
                 || async move {
@@ -291,23 +318,17 @@ impl Identity {
                         Ok(did_doc) => {
                             // TODO: fix in atrium: should verify id is did
                             if did_doc.id != did.to_string() {
-                                return Err(foyer::Error::other(Box::new(
-                                    IdentityError::BadDidDoc(
-                                        "did doc's id did not match did".to_string(),
-                                    ),
-                                )));
+                                return Err(IdentityError::BadDidDoc(
+                                    "did doc's id did not match did".to_string(),
+                                ));
                             }
-                            let mini_doc = did_doc.try_into().map_err(|e| {
-                                foyer::Error::Other(Box::new(IdentityError::BadDidDoc(e)))
-                            })?;
+                            let mini_doc = did_doc.try_into().map_err(IdentityError::BadDidDoc)?;
                             Ok(IdentityVal(UtcDateTime::now(), IdentityData::Doc(mini_doc)))
                         }
                         Err(atrium_identity::Error::NotFound) => {
                             Ok(IdentityVal(UtcDateTime::now(), IdentityData::NotFound))
                         }
-                        Err(other) => Err(foyer::Error::Other(Box::new(
-                            IdentityError::ResolutionFailed(other),
-                        ))),
+                        Err(other) => Err(IdentityError::ResolutionFailed(other)),
                     }
                 }
             })
