@@ -154,13 +154,14 @@ async fn main() -> Result<(), String> {
 
     let repo = Repo::new(identity.clone());
 
+    let identity_for_server = identity.clone();
     let server_shutdown = shutdown.clone();
     let server_cache_handle = cache.clone();
     let bind = args.bind;
     tasks.spawn(async move {
         serve(
             server_cache_handle,
-            identity,
+            identity_for_server,
             repo,
             args.acme_domain,
             args.acme_contact,
@@ -173,6 +174,7 @@ async fn main() -> Result<(), String> {
         Ok(())
     });
 
+    let identity_refreshable = identity.clone();
     let consumer_shutdown = shutdown.clone();
     let consumer_cache = cache.clone();
     tasks.spawn(async move {
@@ -180,6 +182,7 @@ async fn main() -> Result<(), String> {
             args.jetstream,
             None,
             args.jetstream_no_zstd,
+            identity_refreshable,
             consumer_shutdown,
             consumer_cache,
         )

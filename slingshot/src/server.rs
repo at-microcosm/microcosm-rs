@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use poem::{
-    Endpoint, EndpointExt, Route, Server,
+    Endpoint, EndpointExt, IntoResponse, Route, Server,
     endpoint::{StaticFileEndpoint, make_sync},
     http::Method,
     listener::{
@@ -772,11 +772,27 @@ where
                 .allow_credentials(false),
         )
         .with(CatchPanic::new())
+        .around(request_counter)
         .with(Tracing);
+
     Server::new(listener)
         .name("slingshot")
         .run_with_graceful_shutdown(app, shutdown.cancelled(), None)
         .await
         .map_err(ServerError::ServerExited)
         .inspect(|()| log::info!("server ended. goodbye."))
+}
+
+async fn request_counter<E: Endpoint>(next: E, req: poem::Request) -> poem::Result<poem::Response> {
+    let t0 = std::time::Instant::now();
+    let method = req.method().to_string();
+    let path = req.uri().path().to_string();
+    let res = next.call(req).await?.into_response();
+    metrics::histogram!(
+        "server_request",
+        "endpoint" => format!("{method} {path}"),
+        "status" => res.status().to_string(),
+    )
+    .record(t0.elapsed());
+    Ok(res)
 }

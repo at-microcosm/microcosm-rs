@@ -1,5 +1,5 @@
-use crate::CachedRecord;
 use crate::error::ConsumerError;
+use crate::{CachedRecord, Identity, IdentityKey};
 use foyer::HybridCache;
 use jetstream::{
     DefaultJetstreamEndpoints, JetstreamCompression, JetstreamConfig, JetstreamConnector,
@@ -11,6 +11,7 @@ pub async fn consume(
     jetstream_endpoint: String,
     cursor: Option<Cursor>,
     no_zstd: bool,
+    identity: Identity,
     shutdown: CancellationToken,
     cache: HybridCache<String, CachedRecord>,
 ) -> Result<(), ConsumerError> {
@@ -46,33 +47,48 @@ pub async fn consume(
             break;
         };
 
-        if event.kind != EventKind::Commit {
-            continue;
-        }
-        let Some(ref mut commit) = event.commit else {
-            log::warn!("consumer: commit event missing commit data, ignoring");
-            continue;
-        };
+        match event.kind {
+            EventKind::Commit => {
+                let Some(ref mut commit) = event.commit else {
+                    log::warn!("consumer: commit event missing commit data, ignoring");
+                    continue;
+                };
 
-        // TODO: something a bit more robust
-        let at_uri = format!(
-            "at://{}/{}/{}",
-            &*event.did, &*commit.collection, &*commit.rkey
-        );
+                // TODO: something a bit more robust
+                let at_uri = format!(
+                    "at://{}/{}/{}",
+                    &*event.did, &*commit.collection, &*commit.rkey
+                );
 
-        if commit.operation == CommitOp::Delete {
-            cache.insert(at_uri, CachedRecord::Deleted);
-        } else {
-            let Some(record) = commit.record.take() else {
-                log::warn!("consumer: commit insert or update missing record, ignoring");
-                continue;
-            };
-            let Some(cid) = commit.cid.take() else {
-                log::warn!("consumer: commit insert or update missing CID, ignoring");
-                continue;
-            };
+                if commit.operation == CommitOp::Delete {
+                    cache.insert(at_uri, CachedRecord::Deleted);
+                } else {
+                    let Some(record) = commit.record.take() else {
+                        log::warn!("consumer: commit insert or update missing record, ignoring");
+                        continue;
+                    };
+                    let Some(cid) = commit.cid.take() else {
+                        log::warn!("consumer: commit insert or update missing CID, ignoring");
+                        continue;
+                    };
 
-            cache.insert(at_uri, CachedRecord::Found((cid, record).into()));
+                    cache.insert(at_uri, CachedRecord::Found((cid, record).into()));
+                }
+            }
+            EventKind::Identity => {
+                let Some(ident) = event.identity else {
+                    log::warn!("consumer: identity event missing identity data, ignoring");
+                    continue;
+                };
+                if let Some(handle) = ident.handle {
+                    metrics::counter!("identity_handle_refresh_queued", "reason" => "identity event").increment(1);
+                    identity.queue_refresh(IdentityKey::Handle(handle)).await;
+                }
+                metrics::counter!("identity_did_refresh_queued", "reason" => "identity event")
+                    .increment(1);
+                identity.queue_refresh(IdentityKey::Did(ident.did)).await;
+            }
+            EventKind::Account => {} // TODO: handle account events (esp hiding content on deactivate, clearing on delete)
         }
     }
 
