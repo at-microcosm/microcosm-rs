@@ -288,6 +288,35 @@ impl Xrpc {
         self.get_record_impl(repo, collection, rkey, cid).await
     }
 
+    /// blue.microcosm.repo.getRecordByUri
+    ///
+    /// alias of `com.bad-example.repo.getUriRecord` with intention to stabilize under this name
+    #[oai(
+        path = "/blue.microcosm.repo.getRecordByUri",
+        method = "get",
+        tag = "ApiTags::Custom"
+    )]
+    async fn get_record_by_uri(
+        &self,
+        /// The at-uri of the record
+        ///
+        /// The identifier can be a DID or an atproto handle, and the collection
+        /// and rkey segments must be present.
+        #[oai(example = "example_uri")]
+        Query(at_uri): Query<String>,
+        /// Optional: the CID of the version of the record.
+        ///
+        /// If not specified, then return the most recent version.
+        ///
+        /// > [!tip]
+        /// > If specified and a newer version of the record exists, returns 404 not
+        /// > found. That is: slingshot only retains the most recent version of a
+        /// > record.
+        Query(cid): Query<Option<String>>,
+    ) -> GetRecordResponse {
+        self.get_uri_record(Query(at_uri), Query(cid)).await
+    }
+
     /// com.bad-example.repo.getUriRecord
     ///
     /// Ergonomic complement to [`com.atproto.repo.getRecord`](https://docs.bsky.app/docs/api/com-atproto-repo-get-record)
@@ -411,6 +440,23 @@ impl Xrpc {
         JustDidResponse::Ok(Json(FoundDidResponseObject {
             did: alleged_did.to_string(),
         }))
+    }
+
+    /// blue.microcosm.identity.resolveMiniDoc
+    ///
+    /// alias of `com.bad-example.identity.resolveMiniDoc` with intention to stabilize under this name
+    #[oai(
+        path = "/blue.microcosm.identity.resolveMiniDoc",
+        method = "get",
+        tag = "ApiTags::Custom"
+    )]
+    async fn resolve_mini_doc(
+        &self,
+        /// Handle or DID to resolve
+        #[oai(example = "example_handle")]
+        Query(identifier): Query<String>,
+    ) -> ResolveMiniIDResponse {
+        self.resolve_mini_id(Query(identifier)).await
     }
 
     /// com.bad-example.identity.resolveMiniDoc
