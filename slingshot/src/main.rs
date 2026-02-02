@@ -31,6 +31,14 @@ struct Args {
     #[arg(long, env = "SLINGSHOT_BIND")]
     #[clap(default_value = "0.0.0.0:8080")]
     bind: std::net::SocketAddr,
+    /// memory cache size in megabytes
+    #[arg(long, env = "SLINGSHOT_CACHE_MEMORY_MB")]
+    #[clap(default_value_t = 64)]
+    cache_memory_mb: usize,
+    /// disk cache size in gigabytes
+    #[arg(long, env = "SLINGHSOT_CACHE_DISK_DB")]
+    #[clap(default_value_t = 1)]
+    cache_disk_gb: usize,
     /// the domain pointing to this server
     ///
     /// if present:
@@ -108,7 +116,12 @@ async fn main() -> Result<(), String> {
     log::info!("cache dir ready at at {cache_dir:?}.");
 
     log::info!("setting up firehose cache...");
-    let cache = firehose_cache(cache_dir.join("./firehose")).await?;
+    let cache = firehose_cache(
+        cache_dir.join("./firehose"),
+        args.cache_memory_mb,
+        args.cache_disk_gb,
+    )
+    .await?;
     log::info!("firehose cache ready.");
 
     let mut tasks: tokio::task::JoinSet<Result<(), MainTaskError>> = tokio::task::JoinSet::new();
