@@ -115,7 +115,7 @@ impl TryFrom<DidDocument> for PartialMiniDoc {
             let Some(maybe_handle) = aka.strip_prefix("at://") else {
                 continue;
             };
-            let Ok(valid_handle) = Handle::new(maybe_handle.to_string()) else {
+            let Ok(valid_handle) = Handle::new(maybe_handle.to_lowercase()) else {
                 continue;
             };
             unverified_handle = Some(valid_handle);

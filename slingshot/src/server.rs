@@ -404,7 +404,7 @@ impl Xrpc {
         #[oai(example = "example_handle")]
         Query(handle): Query<String>,
     ) -> JustDidResponse {
-        let Ok(handle) = Handle::new(handle) else {
+        let Ok(handle) = Handle::new(handle.to_lowercase()) else {
             return JustDidResponse::BadRequest(xrpc_error("InvalidRequest", "not a valid handle"));
         };
 
@@ -482,7 +482,7 @@ impl Xrpc {
         let did = match Did::new(identifier.clone()) {
             Ok(did) => did,
             Err(_) => {
-                let Ok(alleged_handle) = Handle::new(identifier) else {
+                let Ok(alleged_handle) = Handle::new(identifier.to_lowercase()) else {
                     return invalid("Identifier was not a valid DID or handle");
                 };
 
@@ -559,7 +559,7 @@ impl Xrpc {
         let did = match Did::new(repo.clone()) {
             Ok(did) => did,
             Err(_) => {
-                let Ok(handle) = Handle::new(repo) else {
+                let Ok(handle) = Handle::new(repo.to_lowercase()) else {
                     return GetRecordResponse::BadRequest(xrpc_error(
                         "InvalidRequest",
                         "Repo was not a valid DID or handle",
