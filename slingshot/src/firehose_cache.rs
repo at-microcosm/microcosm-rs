@@ -15,7 +15,7 @@ pub async fn firehose_cache(
         .with_device_options(
             DirectFsDeviceOptions::new(cache_dir)
                 .with_capacity(disk_gb * 2_usize.pow(30))
-                .with_file_size(16 * 2_usize.pow(20)), // note: this does limit the max cached item size, warning jumbo records
+                .with_file_size(16 * 2_usize.pow(20)), // note: this does limit the max cached item size (records should be max 1mb cbor, bit bigger json)
         )
         .build()
         .await

@@ -161,7 +161,11 @@ pub struct Identity {
 }
 
 impl Identity {
-    pub async fn new(cache_dir: impl AsRef<Path>) -> Result<Self, IdentityError> {
+    pub async fn new(
+        cache_dir: impl AsRef<Path>,
+        memory_mb: usize,
+        disk_gb: usize,
+    ) -> Result<Self, IdentityError> {
         let http_client = Arc::new(DefaultHttpClient::default());
         let handle_resolver = AtprotoHandleResolver::new(AtprotoHandleResolverConfig {
             dns_txt_resolver: HickoryDnsTxtResolver::new().unwrap(),
@@ -174,13 +178,13 @@ impl Identity {
 
         let cache = HybridCacheBuilder::new()
             .with_name("identity")
-            .memory(16 * 2_usize.pow(20))
+            .memory(memory_mb * 2_usize.pow(20))
             .with_weighter(|k, v| std::mem::size_of_val(k) + std::mem::size_of_val(v))
             .storage(Engine::small())
             .with_device_options(
                 DirectFsDeviceOptions::new(cache_dir)
-                    .with_capacity(2_usize.pow(30)) // TODO: configurable (1GB to have something)
-                    .with_file_size(2_usize.pow(20)), // note: this does limit the max cached item size, warning jumbo records
+                    .with_capacity(disk_gb * 2_usize.pow(30)) // TODO: configurable (1GB to have something)
+                    .with_file_size(2_usize.pow(20)), // note: this does limit the max cached item size!
             )
             .build()
             .await?;

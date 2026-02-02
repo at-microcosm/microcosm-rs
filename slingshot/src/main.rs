@@ -31,14 +31,22 @@ struct Args {
     #[arg(long, env = "SLINGSHOT_BIND")]
     #[clap(default_value = "0.0.0.0:8080")]
     bind: std::net::SocketAddr,
-    /// memory cache size in megabytes
-    #[arg(long, env = "SLINGSHOT_CACHE_MEMORY_MB")]
+    /// memory cache size in megabytes for records
+    #[arg(long, env = "SLINGSHOT_RECORD_CACHE_MEMORY_MB")]
     #[clap(default_value_t = 64)]
-    cache_memory_mb: usize,
-    /// disk cache size in gigabytes
-    #[arg(long, env = "SLINGHSOT_CACHE_DISK_DB")]
+    record_cache_memory_mb: usize,
+    /// disk cache size in gigabytes for records
+    #[arg(long, env = "SLINGSHOT_RECORD_CACHE_DISK_DB")]
     #[clap(default_value_t = 1)]
-    cache_disk_gb: usize,
+    record_cache_disk_gb: usize,
+    /// memory cache size in megabytes for identities
+    #[arg(long, env = "SLINGSHOT_IDENTITY_CACHE_MEMORY_MB")]
+    #[clap(default_value_t = 64)]
+    identity_cache_memory_mb: usize,
+    /// disk cache size in gigabytes for identities
+    #[arg(long, env = "SLINGSHOT_IDENTITY_CACHE_DISK_DB")]
+    #[clap(default_value_t = 1)]
+    identity_cache_disk_gb: usize,
     /// the domain pointing to this server
     ///
     /// if present:
@@ -118,8 +126,8 @@ async fn main() -> Result<(), String> {
     log::info!("setting up firehose cache...");
     let cache = firehose_cache(
         cache_dir.join("./firehose"),
-        args.cache_memory_mb,
-        args.cache_disk_gb,
+        args.record_cache_memory_mb,
+        args.record_cache_disk_gb,
     )
     .await?;
     log::info!("firehose cache ready.");
@@ -127,9 +135,14 @@ async fn main() -> Result<(), String> {
     let mut tasks: tokio::task::JoinSet<Result<(), MainTaskError>> = tokio::task::JoinSet::new();
 
     log::info!("starting identity service...");
-    let identity = Identity::new(cache_dir.join("./identity"))
-        .await
-        .map_err(|e| format!("identity setup failed: {e:?}"))?;
+    let identity = Identity::new(
+        cache_dir.join("./identity"),
+        args.identity_cache_memory_mb,
+        args.identity_cache_disk_gb,
+    )
+    .await
+    .map_err(|e| format!("identity setup failed: {e:?}"))?;
+
     log::info!("identity service ready.");
     let identity_refresher = identity.clone();
     let identity_shutdown = shutdown.clone();
