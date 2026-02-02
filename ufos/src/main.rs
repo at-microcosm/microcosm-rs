@@ -26,35 +26,46 @@ static GLOBAL: Jemalloc = Jemalloc;
 struct Args {
     /// Jetstream server to connect to (exclusive with --fixture). Provide either a wss:// URL, or a shorhand value:
     /// 'us-east-1', 'us-east-2', 'us-west-1', or 'us-west-2'
-    #[arg(long)]
+    #[arg(long, env = "UFOS_JETSTREAM")]
     jetstream: String,
     /// allow changing jetstream endpoints
-    #[arg(long, action)]
+    #[arg(long, action, env = "UFOS_JETSTREAM_FORCE")]
     jetstream_force: bool,
     /// don't request zstd-compressed jetstream events
     ///
     /// reduces CPU at the expense of more ingress bandwidth
-    #[arg(long, action)]
+    #[arg(long, action, env = "UFOS_JETSTREAM_NO_ZSTD")]
     jetstream_no_zstd: bool,
+    /// ufos server's listen address
+    #[arg(long, env = "UFOS_BIND")]
+    #[clap(default_value = "0.0.0.0:9990")]
+    bind: std::net::SocketAddr,
     /// Location to store persist data to disk
-    #[arg(long)]
+    #[arg(long, env = "UFOS_DATA")]
     data: PathBuf,
     /// DEBUG: don't start the jetstream consumer or its write loop
-    #[arg(long, action)]
+    #[arg(long, action, env = "UFOS_PAUSE_WRITER")]
     pause_writer: bool,
     /// Adjust runtime settings like background task intervals for efficient backfill
-    #[arg(long, action)]
+    #[arg(long, action, env = "UFOS_BACKFILL_MODE")]
     backfill: bool,
     /// DEBUG: force the rw loop to fall behind  by pausing it
     /// todo: restore this
     #[arg(long, action)]
     pause_rw: bool,
     /// reset the rollup cursor, scrape through missed things in the past (backfill)
-    #[arg(long, action)]
+    #[arg(long, action, env = "UFOS_REROLL")]
     reroll: bool,
     /// DEBUG: interpret jetstream as a file fixture
-    #[arg(long, action)]
+    #[arg(long, action, env = "UFOS_JETSTREAM_FIXTURE")]
     jetstream_fixture: bool,
+    /// enable metrics collection and serving
+    #[arg(long, action, env = "UFOS_COLLECT_METRICS")]
+    collect_metrics: bool,
+    /// metrics server's listen address
+    #[arg(long, env = "UFOS_BIND_METRICS")]
+    #[clap(default_value = "0.0.0.0:8765")]
+    bind_metrics: std::net::SocketAddr,
 }
 
 #[tokio::main]
@@ -84,7 +95,7 @@ async fn go<B: StoreBackground + 'static>(
     let mut consumer_tasks: JoinSet<anyhow::Result<()>> = JoinSet::new();
 
     println!("starting server with storage...");
-    let serving = server::serve(read_store.clone());
+    let serving = server::serve(read_store.clone(), args.bind);
     whatever_tasks.spawn(async move {
         serving.await.map_err(|e| {
             log::warn!("server ended: {e}");
@@ -137,7 +148,10 @@ async fn go<B: StoreBackground + 'static>(
         Ok(())
     });
 
-    install_metrics_server()?;
+    if args.collect_metrics {
+        log::trace!("installing metrics server...");
+        install_metrics_server(args.bind_metrics)?;
+    }
 
     for (i, t) in consumer_tasks.join_all().await.iter().enumerate() {
         log::warn!("task {i} done: {t:?}");
@@ -151,24 +165,16 @@ async fn go<B: StoreBackground + 'static>(
     Ok(())
 }
 
-fn install_metrics_server() -> anyhow::Result<()> {
+fn install_metrics_server(bind: std::net::SocketAddr) -> anyhow::Result<()> {
     log::info!("installing metrics server...");
-    let host = [0, 0, 0, 0];
-    let port = 8765;
     PrometheusBuilder::new()
         .set_quantiles(&[0.5, 0.9, 0.99, 1.0])?
         .set_bucket_duration(Duration::from_secs(60))?
         .set_bucket_count(std::num::NonZero::new(10).unwrap()) // count * duration = 10 mins. stuff doesn't happen that fast here.
         .set_enable_unit_suffix(false) // this seemed buggy for constellation (sometimes wouldn't engage)
-        .with_http_listener((host, port))
+        .with_http_listener(bind)
         .install()?;
-    log::info!(
-        "metrics server installed! listening on http://{}.{}.{}.{}:{port}",
-        host[0],
-        host[1],
-        host[2],
-        host[3]
-    );
+    log::info!("metrics server installed! listening on {bind}");
     Ok(())
 }
 

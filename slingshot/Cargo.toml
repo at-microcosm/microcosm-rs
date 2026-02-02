@@ -8,7 +8,7 @@ atrium-api = { git = "https://github.com/uniphil/atrium.git", branch = "fix/reso
 atrium-common = { git = "https://github.com/uniphil/atrium.git", branch = "fix/resolve-handle-https-accept-whitespace" }
 atrium-identity = { git = "https://github.com/uniphil/atrium.git", branch = "fix/resolve-handle-https-accept-whitespace" }
 atrium-oauth = { git = "https://github.com/uniphil/atrium.git", branch = "fix/resolve-handle-https-accept-whitespace" }
-clap = { version = "4.5.41", features = ["derive"] }
+clap = { workspace = true }
 ctrlc = "3.4.7"
 foyer = { version = "0.18.0", features = ["serde"] }
 hickory-resolver = "0.25.2"

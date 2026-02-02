@@ -26,12 +26,11 @@ struct Args {
     #[arg(long)]
     #[clap(default_value = "0.0.0.0:6789")]
     bind: SocketAddr,
-    /// optionally disable the metrics server
-    #[arg(long)]
-    #[clap(default_value_t = false)]
+    /// enable metrics collection and serving
+    #[arg(long, action)]
     collect_metrics: bool,
     /// metrics server's listen address
-    #[arg(long)]
+    #[arg(long, requires("collect_metrics"))]
     #[clap(default_value = "0.0.0.0:8765")]
     bind_metrics: SocketAddr,
     /// Jetstream server to connect to (exclusive with --fixture). Provide either a wss:// URL, or a shorhand value:
@@ -222,58 +221,58 @@ fn run(
         // only spawn monitoring thread if the metrics server is running
         if collect_metrics {
             s.spawn(move || { // monitor thread
-            let stay_alive = stay_alive.clone();
-            let check_alive = stay_alive.clone();
+                let stay_alive = stay_alive.clone();
+                let check_alive = stay_alive.clone();
 
-            let process_collector = metrics_process::Collector::default();
-            process_collector.describe();
-            metrics::describe_gauge!(
-                "storage_available",
-                metrics::Unit::Bytes,
-                "available to be allocated"
-            );
-            metrics::describe_gauge!(
-                "storage_free",
-                metrics::Unit::Bytes,
-                "unused bytes in filesystem"
-            );
-            if let Some(ref p) = data_dir {
-                if let Err(e) = fs4::available_space(p) {
-                    eprintln!("fs4 failed to get available space. may not be supported here? space metrics may be absent. e: {e:?}");
-                } else {
-                    println!("disk space monitoring should work, watching at {p:?}");
-                }
-            }
-
-            'monitor: loop {
-                match readable.get_stats() {
-                    Ok(StorageStats { dids, targetables, linking_records, .. }) => {
-                        metrics::gauge!("storage.stats.dids").set(dids as f64);
-                        metrics::gauge!("storage.stats.targetables").set(targetables as f64);
-                        metrics::gauge!("storage.stats.linking_records").set(linking_records as f64);
-                    }
-                    Err(e) => eprintln!("failed to get stats: {e:?}"),
-                }
-
-                process_collector.collect();
+                let process_collector = metrics_process::Collector::default();
+                process_collector.describe();
+                metrics::describe_gauge!(
+                    "storage_available",
+                    metrics::Unit::Bytes,
+                    "available to be allocated"
+                );
+                metrics::describe_gauge!(
+                    "storage_free",
+                    metrics::Unit::Bytes,
+                    "unused bytes in filesystem"
+                );
                 if let Some(ref p) = data_dir {
-                    if let Ok(avail) = fs4::available_space(p) {
-                        metrics::gauge!("storage.available").set(avail as f64);
-                    }
-                    if let Ok(free) = fs4::free_space(p) {
-                        metrics::gauge!("storage.free").set(free as f64);
-                    }
-                }
-                let wait = time::Instant::now();
-                while wait.elapsed() < MONITOR_INTERVAL {
-                    thread::sleep(time::Duration::from_millis(100));
-                    if check_alive.is_cancelled() {
-                        break 'monitor
+                    if let Err(e) = fs4::available_space(p) {
+                        eprintln!("fs4 failed to get available space. may not be supported here? space metrics may be absent. e: {e:?}");
+                    } else {
+                        println!("disk space monitoring should work, watching at {p:?}");
                     }
                 }
-            }
-            stay_alive.drop_guard();
-            });
+
+                'monitor: loop {
+                    match readable.get_stats() {
+                        Ok(StorageStats { dids, targetables, linking_records, .. }) => {
+                            metrics::gauge!("storage.stats.dids").set(dids as f64);
+                            metrics::gauge!("storage.stats.targetables").set(targetables as f64);
+                            metrics::gauge!("storage.stats.linking_records").set(linking_records as f64);
+                        }
+                        Err(e) => eprintln!("failed to get stats: {e:?}"),
+                    }
+
+                    process_collector.collect();
+                    if let Some(ref p) = data_dir {
+                        if let Ok(avail) = fs4::available_space(p) {
+                            metrics::gauge!("storage.available").set(avail as f64);
+                        }
+                        if let Ok(free) = fs4::free_space(p) {
+                            metrics::gauge!("storage.free").set(free as f64);
+                        }
+                    }
+                    let wait = time::Instant::now();
+                    while wait.elapsed() < MONITOR_INTERVAL {
+                        thread::sleep(time::Duration::from_millis(100));
+                        if check_alive.is_cancelled() {
+                            break 'monitor
+                        }
+                    }
+                }
+                stay_alive.drop_guard();
+                });
         }
     });
 

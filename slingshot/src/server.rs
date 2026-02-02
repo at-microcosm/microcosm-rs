@@ -687,14 +687,17 @@ fn get_did_doc(domain: &str) -> impl Endpoint + use<> {
     make_sync(move |_| doc.clone())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn serve(
     cache: HybridCache<String, CachedRecord>,
     identity: Identity,
     repo: Repo,
-    domain: Option<String>,
+    acme_domain: Option<String>,
     acme_contact: Option<String>,
-    certs: Option<PathBuf>,
+    acme_cache_path: Option<PathBuf>,
+    acme_ipv6: bool,
     shutdown: CancellationToken,
+    bind: std::net::SocketAddr,
 ) -> Result<(), ServerError> {
     let repo = Arc::new(repo);
     let api_service = OpenApiService::new(
@@ -706,7 +709,7 @@ pub async fn serve(
         "Slingshot",
         env!("CARGO_PKG_VERSION"),
     )
-    .server(if let Some(ref h) = domain {
+    .server(if let Some(ref h) = acme_domain {
         format!("https://{h}")
     } else {
         "http://localhost:3000".to_string()
@@ -727,7 +730,7 @@ pub async fn serve(
         .nest("/openapi", api_service.spec_endpoint())
         .nest("/xrpc/", api_service);
 
-    if let Some(domain) = domain {
+    if let Some(domain) = acme_domain {
         rustls::crypto::aws_lc_rs::default_provider()
             .install_default()
             .expect("alskfjalksdjf");
@@ -740,19 +743,19 @@ pub async fn serve(
         if let Some(contact) = acme_contact {
             auto_cert = auto_cert.contact(contact);
         }
-        if let Some(certs) = certs {
-            auto_cert = auto_cert.cache_path(certs);
+        if let Some(cache_path) = acme_cache_path {
+            auto_cert = auto_cert.cache_path(cache_path);
         }
         let auto_cert = auto_cert.build().map_err(ServerError::AcmeBuildError)?;
 
         run(
-            TcpListener::bind("0.0.0.0:443").acme(auto_cert),
+            TcpListener::bind(if acme_ipv6 { "[::]:443" } else { "0.0.0.0:443" }).acme(auto_cert),
             app,
             shutdown,
         )
         .await
     } else {
-        run(TcpListener::bind("127.0.0.1:3000"), app, shutdown).await
+        run(TcpListener::bind(bind), app, shutdown).await
     }
 }
 
