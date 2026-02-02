@@ -83,7 +83,7 @@ impl Repo {
     pub fn new(identity: Identity) -> Self {
         let client = Client::builder()
             .user_agent(format!(
-                "microcosm slingshot v{} (dev: @bad-example.com)",
+                "microcosm slingshot v{} (contact: @bad-example.com)",
                 env!("CARGO_PKG_VERSION")
             ))
             .no_proxy()
