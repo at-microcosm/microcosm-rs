@@ -6,7 +6,7 @@
 
 {% block content %}
 
-  {% call try_it::get_backlinks(query.subject, query.source, query.did, query.limit) %}
+  {% call try_it::get_backlinks(query.subject, query.source, query.did, query.limit, query.reverse) %}
 
   <h2>
     Links to <code>{{ query.subject }}</code>
@@ -40,6 +40,7 @@
         <input type="hidden" name="did" value="{{ did }}" />
       {% endfor %}
       <input type="hidden" name="cursor" value={{ c|json|safe }} />
+      <input type="hidden" name="reverse" value="{{ query.reverse }}">
       <button type="submit">next page&hellip;</button>
     </form>
   {% else %}

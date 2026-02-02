@@ -10,7 +10,7 @@ Welcome! Documentation is under active development. If you like reading API docs
 Tutorials, how-to guides, and client SDK libraries are all in the works for gentler on-ramps, but are not quite ready yet. But don't let that stop you! Hop in the [microcosm discord](https://discord.gg/tcDfe4PGVB), or post questions and tag [@bad-example.com](https://bsky.app/profile/bad-example.com) on Bluesky if you get stuck anywhere.
 
 > [!tip]
-> This repository's primary home is moving to tangled: [@microcosm.blue/microcosm-rs](https://tangled.sh/@microcosm.blue/microcosm-rs). It will continue to be mirrored on [github](https://github.com/at-microcosm/microcosm-rs) for the forseeable future, and it's fine to open issues or pulls in either place!
+> This repository's primary home is moving to tangled: [@microcosm.blue/microcosm-rs](https://tangled.org/microcosm.blue/microcosm-rs). It will continue to be mirrored on [github](https://github.com/at-microcosm/microcosm-rs) for the forseeable future, and it's fine to open issues or pulls in either place!
 
 
 🌌 [Constellation](./constellation/)

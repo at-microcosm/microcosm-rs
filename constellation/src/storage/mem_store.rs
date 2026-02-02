@@ -1,5 +1,5 @@
 use super::{
-    LinkReader, LinkStorage, PagedAppendingCollection, PagedOrderedCollection, StorageStats,
+    LinkReader, LinkStorage, Order, PagedAppendingCollection, PagedOrderedCollection, StorageStats,
 };
 use crate::{ActionableEvent, CountsByCount, Did, RecordId};
 use anyhow::Result;
@@ -147,10 +147,10 @@ impl LinkReader for MemStorage {
     ) -> Result<PagedOrderedCollection<(String, u64, u64), String>> {
         let data = self.0.lock().unwrap();
         let Some(paths) = data.targets.get(&Target::new(target)) else {
-            return Ok(PagedOrderedCollection::default());
+            return Ok(PagedOrderedCollection::empty());
         };
         let Some(linkers) = paths.get(&Source::new(collection, path)) else {
-            return Ok(PagedOrderedCollection::default());
+            return Ok(PagedOrderedCollection::empty());
         };
 
         let path_to_other = RecordPath::new(path_to_other);
@@ -239,26 +239,17 @@ impl LinkReader for MemStorage {
         target: &str,
         collection: &str,
         path: &str,
+        order: Order,
         limit: u64,
-        until: Option<u64>,
+        until: Option<u64>, // paged iteration endpoint
         filter_dids: &HashSet<Did>,
     ) -> Result<PagedAppendingCollection<RecordId>> {
         let data = self.0.lock().unwrap();
         let Some(paths) = data.targets.get(&Target::new(target)) else {
-            return Ok(PagedAppendingCollection {
-                version: (0, 0),
-                items: Vec::new(),
-                next: None,
-                total: 0,
-            });
+            return Ok(PagedAppendingCollection::empty());
         };
         let Some(did_rkeys) = paths.get(&Source::new(collection, path)) else {
-            return Ok(PagedAppendingCollection {
-                version: (0, 0),
-                items: Vec::new(),
-                next: None,
-                total: 0,
-            });
+            return Ok(PagedAppendingCollection::empty());
         };
 
         let did_rkeys: Vec<_> = if !filter_dids.is_empty() {
@@ -275,33 +266,51 @@ impl LinkReader for MemStorage {
             did_rkeys.to_vec()
         };
 
-        let total = did_rkeys.len();
-        let end = until
-            .map(|u| std::cmp::min(u as usize, total))
-            .unwrap_or(total);
-        let begin = end.saturating_sub(limit as usize);
-        let next = if begin == 0 { None } else { Some(begin as u64) };
+        let total = did_rkeys.len() as u64;
 
-        let alive = did_rkeys.iter().flatten().count();
+        // backlinks are stored oldest-to-newest (ascending index with increasing age)
+        let (start, take, next_until) = match order {
+            Order::OldestToNewest => {
+                let start = until.unwrap_or(0);
+                let next = start + limit + 1;
+                let next_until = if next < total { Some(next) } else { None };
+                (start, limit, next_until)
+            }
+            Order::NewestToOldest => {
+                let until = until.unwrap_or(total);
+                match until.checked_sub(limit) {
+                    Some(s) if s > 0 => (s, limit, Some(s)),
+                    Some(s) => (s, limit, None),
+                    None => (0, until, None),
+                }
+            }
+        };
+
+        let alive = did_rkeys.iter().flatten().count() as u64;
         let gone = total - alive;
 
-        let items: Vec<_> = did_rkeys[begin..end]
+        let items = did_rkeys
             .iter()
-            .rev()
+            .skip(start as usize)
+            .take(take as usize)
             .flatten()
             .filter(|(did, _)| *data.dids.get(did).expect("did must be in dids"))
             .map(|(did, rkey)| RecordId {
                 did: did.clone(),
                 rkey: rkey.0.clone(),
                 collection: collection.to_string(),
-            })
-            .collect();
+            });
+
+        let items: Vec<_> = match order {
+            Order::OldestToNewest => items.collect(), // links are stored oldest first
+            Order::NewestToOldest => items.rev().collect(),
+        };
 
         Ok(PagedAppendingCollection {
-            version: (total as u64, gone as u64),
+            version: (total, gone),
             items,
-            next,
-            total: alive as u64,
+            next: next_until,
+            total: alive,
         })
     }
 
@@ -315,20 +324,10 @@ impl LinkReader for MemStorage {
     ) -> Result<PagedAppendingCollection<Did>> {
         let data = self.0.lock().unwrap();
         let Some(paths) = data.targets.get(&Target::new(target)) else {
-            return Ok(PagedAppendingCollection {
-                version: (0, 0),
-                items: Vec::new(),
-                next: None,
-                total: 0,
-            });
+            return Ok(PagedAppendingCollection::empty());
         };
         let Some(did_rkeys) = paths.get(&Source::new(collection, path)) else {
-            return Ok(PagedAppendingCollection {
-                version: (0, 0),
-                items: Vec::new(),
-                next: None,
-                total: 0,
-            });
+            return Ok(PagedAppendingCollection::empty());
         };
 
         let dids: Vec<Option<Did>> = {
@@ -348,18 +347,21 @@ impl LinkReader for MemStorage {
                 .collect()
         };
 
-        let total = dids.len();
-        let end = until
-            .map(|u| std::cmp::min(u as usize, total))
-            .unwrap_or(total);
-        let begin = end.saturating_sub(limit as usize);
-        let next = if begin == 0 { None } else { Some(begin as u64) };
+        let total = dids.len() as u64;
+        let until = until.unwrap_or(total);
+        let (start, take, next_until) = match until.checked_sub(limit) {
+            Some(s) if s > 0 => (s, limit, Some(s)),
+            Some(s) => (s, limit, None),
+            None => (0, until, None),
+        };
 
-        let alive = dids.iter().flatten().count();
+        let alive = dids.iter().flatten().count() as u64;
         let gone = total - alive;
 
-        let items: Vec<Did> = dids[begin..end]
+        let items: Vec<Did> = dids
             .iter()
+            .skip(start as usize)
+            .take(take as usize)
             .rev()
             .flatten()
             .filter(|did| *data.dids.get(did).expect("did must be in dids"))
@@ -367,10 +369,10 @@ impl LinkReader for MemStorage {
             .collect();
 
         Ok(PagedAppendingCollection {
-            version: (total as u64, gone as u64),
+            version: (total, gone),
             items,
-            next,
-            total: alive as u64,
+            next: next_until,
+            total: alive,
         })
     }
 

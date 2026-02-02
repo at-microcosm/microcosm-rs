@@ -17,7 +17,7 @@ use tokio::net::{TcpListener, ToSocketAddrs};
 use tokio::task::spawn_blocking;
 use tokio_util::sync::CancellationToken;
 
-use crate::storage::{LinkReader, StorageStats};
+use crate::storage::{LinkReader, Order, StorageStats};
 use crate::{CountsByCount, Did, RecordId};
 
 mod acceptable;
@@ -25,8 +25,8 @@ mod filters;
 
 use acceptable::{acceptable, ExtractAccept};
 
-const DEFAULT_CURSOR_LIMIT: u64 = 16;
-const DEFAULT_CURSOR_LIMIT_MAX: u64 = 100;
+const DEFAULT_CURSOR_LIMIT: u64 = 100;
+const DEFAULT_CURSOR_LIMIT_MAX: u64 = 1000;
 
 fn get_default_cursor_limit() -> u64 {
     DEFAULT_CURSOR_LIMIT
@@ -66,12 +66,24 @@ where
                 }
             }),
         )
+        // deprecated
         .route(
             "/links/count",
             get({
                 let store = store.clone();
                 move |accept, query| async {
                     spawn_blocking(|| count_links(accept, query, store))
+                        .await
+                        .map_err(to500)?
+                }
+            }),
+        )
+        .route(
+            "/xrpc/blue.microcosm.links.getBacklinksCount",
+            get({
+                let store = store.clone();
+                move |accept, query| async {
+                    spawn_blocking(|| get_backlink_counts(accept, query, store))
                         .await
                         .map_err(to500)?
                 }
@@ -343,6 +355,7 @@ struct GetLinksCountResponse {
     #[serde(skip_serializing)]
     query: GetLinksCountQuery,
 }
+#[deprecated]
 fn count_links(
     accept: ExtractAccept,
     query: Query<GetLinksCountQuery>,
@@ -354,6 +367,40 @@ fn count_links(
     Ok(acceptable(
         accept,
         GetLinksCountResponse {
+            total,
+            query: (*query).clone(),
+        },
+    ))
+}
+
+#[derive(Clone, Deserialize)]
+struct GetItemsCountQuery {
+    subject: String,
+    source: String,
+}
+#[derive(Template, Serialize)]
+#[template(path = "get-backlinks-count.html.j2")]
+struct GetItemsCountResponse {
+    total: u64,
+    #[serde(skip_serializing)]
+    query: GetItemsCountQuery,
+}
+fn get_backlink_counts(
+    accept: ExtractAccept,
+    query: axum_extra::extract::Query<GetItemsCountQuery>,
+    store: impl LinkReader,
+) -> Result<impl IntoResponse, http::StatusCode> {
+    let Some((collection, path)) = query.source.split_once(':') else {
+        return Err(http::StatusCode::BAD_REQUEST);
+    };
+    let path = format!(".{path}");
+    let total = store
+        .get_count(&query.subject, collection, &path)
+        .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(acceptable(
+        accept,
+        GetItemsCountResponse {
             total,
             query: (*query).clone(),
         },
@@ -409,7 +456,9 @@ struct GetBacklinksQuery {
     /// Set the max number of links to return per page of results
     #[serde(default = "get_default_cursor_limit")]
     limit: u64,
-    // TODO: allow reverse (er, forward) order as well
+    /// Allow returning links in reverse order (default: false)
+    #[serde(default)]
+    reverse: bool,
 }
 #[derive(Template, Serialize)]
 #[template(path = "get-backlinks.html.j2")]
@@ -455,11 +504,18 @@ fn get_backlinks(
     };
     let path = format!(".{path}");
 
+    let order = if query.reverse {
+        Order::OldestToNewest
+    } else {
+        Order::NewestToOldest
+    };
+
     let paged = store
         .get_links(
             &query.subject,
             collection,
             &path,
+            order,
             limit,
             until,
             &filter_dids,
@@ -508,7 +564,6 @@ struct GetLinkItemsQuery {
     from_dids: Option<String>, // comma separated: gross
     #[serde(default = "get_default_cursor_limit")]
     limit: u64,
-    // TODO: allow reverse (er, forward) order as well
 }
 #[derive(Template, Serialize)]
 #[template(path = "links.html.j2")]
@@ -562,6 +617,7 @@ fn get_links(
             &query.target,
             &query.collection,
             &query.path,
+            Order::NewestToOldest,
             limit,
             until,
             &filter_dids,
@@ -659,6 +715,7 @@ struct GetAllLinksResponse {
     #[serde(skip_serializing)]
     query: GetAllLinksQuery,
 }
+#[deprecated]
 fn count_all_links(
     accept: ExtractAccept,
     query: Query<GetAllLinksQuery>,

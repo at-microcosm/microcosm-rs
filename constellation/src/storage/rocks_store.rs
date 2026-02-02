@@ -1,6 +1,6 @@
 use super::{
-    ActionableEvent, LinkReader, LinkStorage, PagedAppendingCollection, PagedOrderedCollection,
-    StorageStats,
+    ActionableEvent, LinkReader, LinkStorage, Order, PagedAppendingCollection,
+    PagedOrderedCollection, StorageStats,
 };
 use crate::{CountsByCount, Did, RecordId};
 use anyhow::{bail, Result};
@@ -960,7 +960,7 @@ impl LinkReader for RocksStorage {
 
         let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? else {
             eprintln!("nothin doin for this target, {target_key:?}");
-            return Ok(Default::default());
+            return Ok(PagedOrderedCollection::empty());
         };
 
         let filter_did_ids: HashMap<DidId, bool> = filter_dids
@@ -1127,6 +1127,7 @@ impl LinkReader for RocksStorage {
         target: &str,
         collection: &str,
         path: &str,
+        order: Order,
         limit: u64,
         until: Option<u64>,
         filter_dids: &HashSet<Did>,
@@ -1138,12 +1139,7 @@ impl LinkReader for RocksStorage {
         );
 
         let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? else {
-            return Ok(PagedAppendingCollection {
-                version: (0, 0),
-                items: Vec::new(),
-                next: None,
-                total: 0,
-            });
+            return Ok(PagedAppendingCollection::empty());
         };
 
         let mut linkers = self.get_target_linkers(&target_id)?;
@@ -1167,11 +1163,31 @@ impl LinkReader for RocksStorage {
 
         let (alive, gone) = linkers.count();
         let total = alive + gone;
-        let end = until.map(|u| std::cmp::min(u, total)).unwrap_or(total) as usize;
-        let begin = end.saturating_sub(limit as usize);
-        let next = if begin == 0 { None } else { Some(begin as u64) };
 
-        let did_id_rkeys = linkers.0[begin..end].iter().rev().collect::<Vec<_>>();
+        let (start, take, next_until) = match order {
+            // OldestToNewest: start from the beginning, paginate forward
+            Order::OldestToNewest => {
+                let start = until.unwrap_or(0);
+                let next = start + limit + 1;
+                let next_until = if next < total { Some(next) } else { None };
+                (start, limit, next_until)
+            }
+            // NewestToOldest: start from the end, paginate backward
+            Order::NewestToOldest => {
+                let until = until.unwrap_or(total);
+                match until.checked_sub(limit) {
+                    Some(s) if s > 0 => (s, limit, Some(s)),
+                    Some(s) => (s, limit, None),
+                    None => (0, until, None),
+                }
+            }
+        };
+
+        let did_id_rkeys = linkers.0.iter().skip(start as usize).take(take as usize);
+        let did_id_rkeys: Vec<_> = match order {
+            Order::OldestToNewest => did_id_rkeys.collect(),
+            Order::NewestToOldest => did_id_rkeys.rev().collect(),
+        };
 
         let mut items = Vec::with_capacity(did_id_rkeys.len());
         // TODO: use get-many (or multi-get or whatever it's called)
@@ -1201,7 +1217,7 @@ impl LinkReader for RocksStorage {
         Ok(PagedAppendingCollection {
             version: (total, gone),
             items,
-            next,
+            next: next_until,
             total: alive,
         })
     }
@@ -1221,23 +1237,23 @@ impl LinkReader for RocksStorage {
         );
 
         let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? else {
-            return Ok(PagedAppendingCollection {
-                version: (0, 0),
-                items: Vec::new(),
-                next: None,
-                total: 0,
-            });
+            return Ok(PagedAppendingCollection::empty());
         };
 
         let linkers = self.get_distinct_target_linkers(&target_id)?;
 
         let (alive, gone) = linkers.count();
         let total = alive + gone;
-        let end = until.map(|u| std::cmp::min(u, total)).unwrap_or(total) as usize;
-        let begin = end.saturating_sub(limit as usize);
-        let next = if begin == 0 { None } else { Some(begin as u64) };
 
-        let did_id_rkeys = linkers.0[begin..end].iter().rev().collect::<Vec<_>>();
+        let until = until.unwrap_or(total);
+        let (start, take, next_until) = match until.checked_sub(limit) {
+            Some(s) if s > 0 => (s, limit, Some(s)),
+            Some(s) => (s, limit, None),
+            None => (0, until, None),
+        };
+
+        let did_id_rkeys = linkers.0.iter().skip(start as usize).take(take as usize);
+        let did_id_rkeys: Vec<_> = did_id_rkeys.rev().collect();
 
         let mut items = Vec::with_capacity(did_id_rkeys.len());
         // TODO: use get-many (or multi-get or whatever it's called)
@@ -1263,7 +1279,7 @@ impl LinkReader for RocksStorage {
         Ok(PagedAppendingCollection {
             version: (total, gone),
             items,
-            next,
+            next: next_until,
             total: alive,
         })
     }
