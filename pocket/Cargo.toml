@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 atrium-crypto = "0.1.2"
-clap = { version = "4.5.41", features = ["derive"] }
+clap = { workspace = true }
 jwt-compact = { git = "https://github.com/fatfingers23/jwt-compact.git", features = ["es256k"] }
 log = "0.4.27"
 poem = { version = "3.1.12", features = ["acme", "static-files"] }

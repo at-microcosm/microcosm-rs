@@ -716,7 +716,10 @@ async fn search_collections(
     .await
 }
 
-pub async fn serve(storage: impl StoreReader + 'static, bind: std::net::SocketAddr) -> Result<(), String> {
+pub async fn serve(
+    storage: impl StoreReader + 'static,
+    bind: std::net::SocketAddr,
+) -> Result<(), String> {
     describe_metrics();
     let log = ConfigLogging::StderrTerminal {
         level: ConfigLoggingLevel::Warn,

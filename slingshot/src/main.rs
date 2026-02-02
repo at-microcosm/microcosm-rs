@@ -15,45 +15,61 @@ use tokio_util::sync::CancellationToken;
 struct Args {
     /// Jetstream server to connect to (exclusive with --fixture). Provide either a wss:// URL, or a shorhand value:
     /// 'us-east-1', 'us-east-2', 'us-west-1', or 'us-west-2'
-    #[arg(long)]
+    #[arg(long, env = "SLINGSHOT_JETSTREAM")]
     jetstream: String,
     /// don't request zstd-compressed jetstream events
     ///
     /// reduces CPU at the expense of more ingress bandwidth
-    #[arg(long, action)]
+    #[arg(long, action, env = "SLINGSHOT_JETSTREAM_NO_ZSTD")]
     jetstream_no_zstd: bool,
     /// where to keep disk caches
-    #[arg(long)]
+    #[arg(long, env = "SLINGSHOT_CACHE_DIR")]
     cache_dir: PathBuf,
+    /// where to listen for incomming requests
+    ///
+    /// cannot be used with acme -- if you need ipv6 see --acme-ipv6
+    #[arg(long, env = "SLINGSHOT_BIND")]
+    #[clap(default_value = "0.0.0.0:8080")]
+    bind: std::net::SocketAddr,
     /// the domain pointing to this server
     ///
     /// if present:
     /// - a did:web document will be served at /.well-known/did.json
     /// - an HTTPS certs will be automatically configured with Acme/letsencrypt
     /// - TODO: a rate-limiter will be installed
-    #[arg(long)]
-    domain: Option<String>,
+    #[arg(
+        long,
+        conflicts_with("bind"),
+        requires("acme_cache_path"),
+        env = "SLINGSHOT_ACME_DOMAIN"
+    )]
+    acme_domain: Option<String>,
     /// email address for letsencrypt contact
     ///
     /// recommended in production, i guess?
-    #[arg(long)]
+    #[arg(long, requires("acme_domain"), env = "SLINGSHOT_ACME_CONTACT")]
     acme_contact: Option<String>,
     /// a location to cache acme https certs
     ///
-    /// only used if --host is specified. omitting requires re-requesting certs
-    /// on every restart, and letsencrypt has rate limits that are easy to hit.
+    /// required when (and only used when) --acme-domain is specified.
     ///
     /// recommended in production, but mind the file permissions.
-    #[arg(long)]
-    certs: Option<PathBuf>,
+    #[arg(long, requires("acme_domain"), env = "SLINGSHOT_ACME_CACHE_PATH")]
+    acme_cache_path: Option<PathBuf>,
+    /// listen for ipv6 when using acme
+    ///
+    /// you must also configure the relevant DNS records for this to work
+    #[arg(long, action, requires("acme_domain"), env = "SLINGSHOT_ACME_IPV6")]
+    acme_ipv6: bool,
     /// an web address to send healtcheck pings to every ~51s or so
-    #[arg(long)]
+    #[arg(long, env = "SLINGSHOT_HEALTHCHECK")]
     healthcheck: Option<String>,
-    /// slingshot server's listen address
-    #[arg(long, default_value = "0.0.0.0:8080")]
-    bind: std::net::SocketAddr,
+    /// enable metrics collection and serving
+    #[arg(long, action, env = "SLINGSHOT_COLLECT_METRICS")]
+    collect_metrics: bool,
     /// metrics server's listen address
-    #[arg(long, default_value = "0.0.0.0:8765")]
+    #[arg(long, requires("collect_metrics"), env = "SLINGSHOT_BIND_METRICS")]
+    #[clap(default_value = "[::]:8765")]
     bind_metrics: std::net::SocketAddr,
 }
 
@@ -68,10 +84,13 @@ async fn main() -> Result<(), String> {
 
     let args = Args::parse();
 
-    if let Err(e) = install_metrics_server(args.bind_metrics) {
-        log::error!("failed to install metrics server: {e:?}");
-    } else {
-        log::info!("metrics listening at http://{}", args.bind_metrics);
+    if args.collect_metrics {
+        log::trace!("installing metrics server...");
+        if let Err(e) = install_metrics_server(args.bind_metrics) {
+            log::error!("failed to install metrics server: {e:?}");
+        } else {
+            log::info!("metrics listening at http://{}", args.bind_metrics);
+        }
     }
 
     std::fs::create_dir_all(&args.cache_dir).map_err(|e| {
@@ -116,9 +135,10 @@ async fn main() -> Result<(), String> {
             server_cache_handle,
             identity,
             repo,
-            args.domain,
+            args.acme_domain,
             args.acme_contact,
-            args.certs,
+            args.acme_cache_path,
+            args.acme_ipv6,
             server_shutdown,
             bind,
         )
@@ -180,7 +200,9 @@ async fn main() -> Result<(), String> {
     Ok(())
 }
 
-fn install_metrics_server(bind_metrics: std::net::SocketAddr) -> Result<(), metrics_exporter_prometheus::BuildError> {
+fn install_metrics_server(
+    bind_metrics: std::net::SocketAddr,
+) -> Result<(), metrics_exporter_prometheus::BuildError> {
     log::info!("installing metrics server...");
     PrometheusBuilder::new()
         .set_quantiles(&[0.5, 0.9, 0.99, 1.0])?

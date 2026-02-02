@@ -13,3 +13,6 @@ members = [
     "pocket",
     "reflector",
 ]
+
+[workspace.dependencies]
+clap = { version = "4.5.56", features = ["derive", "env"] }

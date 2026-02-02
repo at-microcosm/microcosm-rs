@@ -16,18 +16,23 @@ use tokio_util::sync::CancellationToken;
 struct Args {
     /// Jetstream server to connect to (exclusive with --fixture). Provide either a wss:// URL, or a shorhand value:
     /// 'us-east-1', 'us-east-2', 'us-west-1', or 'us-west-2'
-    #[arg(long)]
+    #[arg(long, env = "SPACEDUST_JETSTREAM")]
     jetstream: String,
     /// don't request zstd-compressed jetstream events
     ///
     /// reduces CPU at the expense of more ingress bandwidth
-    #[arg(long, action)]
+    #[arg(long, action, env = "SPACEDUST_JETSTREAM_NO_ZSTD")]
     jetstream_no_zstd: bool,
     /// spacedust server's listen address
-    #[arg(long, default_value = "0.0.0.0:9998")]
+    #[arg(long, env = "SPACEDUST_BIND")]
+    #[clap(default_value = "[::]:8080")]
     bind: std::net::SocketAddr,
+    /// enable metrics collection and serving
+    #[arg(long, action, env = "SPACEDUST_COLLECT_METRICS")]
+    collect_metrics: bool,
     /// metrics server's listen address
-    #[arg(long, default_value = "0.0.0.0:8765")]
+    #[arg(long, requires("collect_metrics"), env = "SPACEDUST_BIND_METRICS")]
+    #[clap(default_value = "[::]:8765")]
     bind_metrics: std::net::SocketAddr,
 }
 
@@ -66,9 +71,12 @@ async fn main() -> Result<(), String> {
 
     let args = Args::parse();
 
-    if let Err(e) = install_metrics_server(args.bind_metrics) {
-        log::error!("failed to install metrics server: {e:?}");
-    };
+    if args.collect_metrics {
+        log::trace!("installing metrics server...");
+        if let Err(e) = install_metrics_server(args.bind_metrics) {
+            log::error!("failed to install metrics server: {e:?}");
+        };
+    }
 
     let mut tasks: tokio::task::JoinSet<Result<(), MainTaskError>> = tokio::task::JoinSet::new();
 
@@ -129,7 +137,9 @@ async fn main() -> Result<(), String> {
     Ok(())
 }
 
-fn install_metrics_server(bind_metrics: std::net::SocketAddr) -> Result<(), metrics_exporter_prometheus::BuildError> {
+fn install_metrics_server(
+    bind_metrics: std::net::SocketAddr,
+) -> Result<(), metrics_exporter_prometheus::BuildError> {
     log::info!("installing metrics server...");
     PrometheusBuilder::new()
         .set_quantiles(&[0.5, 0.9, 0.99, 1.0])?

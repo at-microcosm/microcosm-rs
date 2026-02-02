@@ -11,7 +11,7 @@ axum = "0.8.1"
 axum-extra = { version = "0.10.0", features = ["query", "typed-header"] }
 axum-metrics = "0.2"
 bincode = "1.3.3"
-clap = { version = "4.5.26", features = ["derive"] }
+clap = { workspace = true }
 ctrlc = "3.4.5"
 flume = { version = "0.11.1", default-features = false }
 fs4 = { version = "0.12.0", features = ["sync"] }
