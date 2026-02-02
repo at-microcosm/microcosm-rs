@@ -355,7 +355,6 @@ struct GetLinksCountResponse {
     #[serde(skip_serializing)]
     query: GetLinksCountQuery,
 }
-#[deprecated]
 fn count_links(
     accept: ExtractAccept,
     query: Query<GetLinksCountQuery>,
@@ -715,7 +714,6 @@ struct GetAllLinksResponse {
     #[serde(skip_serializing)]
     query: GetAllLinksQuery,
 }
-#[deprecated]
 fn count_all_links(
     accept: ExtractAccept,
     query: Query<GetAllLinksQuery>,
