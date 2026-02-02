@@ -38,7 +38,7 @@ const MIN_TTL: Duration = Duration::from_secs(4 * 3600); // probably shoudl have
 const MIN_NOT_FOUND_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-enum IdentityKey {
+pub enum IdentityKey {
     Handle(Handle),
     Did(Did),
 }
@@ -186,7 +186,7 @@ pub struct Identity {
     /// multi-producer *single consumer* queue
     refresh_queue: Arc<Mutex<RefreshQueue>>,
     /// just a lock to ensure only one refresher (queue consumer) is running (to be improved with a better refresher)
-    refresher: Arc<Mutex<()>>,
+    refresher_task: Arc<Mutex<()>>,
 }
 
 impl Identity {
@@ -225,7 +225,7 @@ impl Identity {
             did_resolver: Arc::new(did_resolver),
             cache,
             refresh_queue: Default::default(),
-            refresher: Default::default(),
+            refresher_task: Default::default(),
         })
     }
 
@@ -293,12 +293,14 @@ impl Identity {
             }
             IdentityData::NotFound => {
                 if (now - *last_fetch) >= MIN_NOT_FOUND_TTL {
+                    metrics::counter!("identity_handle_refresh_queued", "reason" => "ttl", "found" => "false").increment(1);
                     self.queue_refresh(key).await;
                 }
                 Ok(None)
             }
             IdentityData::Did(did) => {
                 if (now - *last_fetch) >= MIN_TTL {
+                    metrics::counter!("identity_handle_refresh_queued", "reason" => "ttl", "found" => "true").increment(1);
                     self.queue_refresh(key).await;
                 }
                 Ok(Some(did.clone()))
@@ -347,12 +349,14 @@ impl Identity {
             }
             IdentityData::NotFound => {
                 if (now - *last_fetch) >= MIN_NOT_FOUND_TTL {
+                    metrics::counter!("identity_did_refresh_queued", "reason" => "ttl", "found" => "false").increment(1);
                     self.queue_refresh(key).await;
                 }
                 Ok(None)
             }
             IdentityData::Doc(mini_did) => {
                 if (now - *last_fetch) >= MIN_TTL {
+                    metrics::counter!("identity_did_refresh_queued", "reason" => "ttl", "found" => "true").increment(1);
                     self.queue_refresh(key).await;
                 }
                 Ok(Some(mini_did.clone()))
@@ -363,7 +367,7 @@ impl Identity {
     /// put a refresh task on the queue
     ///
     /// this can be safely called from multiple concurrent tasks
-    async fn queue_refresh(&self, key: IdentityKey) {
+    pub async fn queue_refresh(&self, key: IdentityKey) {
         // todo: max queue size
         let mut q = self.refresh_queue.lock().await;
         if !q.items.contains(&key) {
@@ -440,7 +444,7 @@ impl Identity {
     /// run the refresh queue consumer
     pub async fn run_refresher(&self, shutdown: CancellationToken) -> Result<(), IdentityError> {
         let _guard = self
-            .refresher
+            .refresher_task
             .try_lock()
             .expect("there to only be one refresher running");
         loop {
@@ -462,18 +466,22 @@ impl Identity {
                     log::trace!("refreshing handle {handle:?}");
                     match self.handle_resolver.resolve(handle).await {
                         Ok(did) => {
+                            metrics::counter!("identity_handle_refresh", "success" => "true")
+                                .increment(1);
                             self.cache.insert(
                                 task_key.clone(),
                                 IdentityVal(UtcDateTime::now(), IdentityData::Did(did)),
                             );
                         }
                         Err(atrium_identity::Error::NotFound) => {
+                            metrics::counter!("identity_handle_refresh", "success" => "false", "reason" => "not found").increment(1);
                             self.cache.insert(
                                 task_key.clone(),
                                 IdentityVal(UtcDateTime::now(), IdentityData::NotFound),
                             );
                         }
                         Err(err) => {
+                            metrics::counter!("identity_handle_refresh", "success" => "false", "reason" => "other").increment(1);
                             log::warn!(
                                 "failed to refresh handle: {err:?}. leaving stale (should we eventually do something?)"
                             );
@@ -488,6 +496,7 @@ impl Identity {
                         Ok(did_doc) => {
                             // TODO: fix in atrium: should verify id is did
                             if did_doc.id != did.to_string() {
+                                metrics::counter!("identity_did_refresh", "success" => "false", "reason" => "wrong did").increment(1);
                                 log::warn!(
                                     "refreshed did doc failed: wrong did doc id. dropping refresh."
                                 );
@@ -496,24 +505,29 @@ impl Identity {
                             let mini_doc = match did_doc.try_into() {
                                 Ok(md) => md,
                                 Err(e) => {
+                                    metrics::counter!("identity_did_refresh", "success" => "false", "reason" => "bad doc").increment(1);
                                     log::warn!(
                                         "converting mini doc failed: {e:?}. dropping refresh."
                                     );
                                     continue;
                                 }
                             };
+                            metrics::counter!("identity_did_refresh", "success" => "true")
+                                .increment(1);
                             self.cache.insert(
                                 task_key.clone(),
                                 IdentityVal(UtcDateTime::now(), IdentityData::Doc(mini_doc)),
                             );
                         }
                         Err(atrium_identity::Error::NotFound) => {
+                            metrics::counter!("identity_did_refresh", "success" => "false", "reason" => "not found").increment(1);
                             self.cache.insert(
                                 task_key.clone(),
                                 IdentityVal(UtcDateTime::now(), IdentityData::NotFound),
                             );
                         }
                         Err(err) => {
+                            metrics::counter!("identity_did_refresh", "success" => "false", "reason" => "other").increment(1);
                             log::warn!(
                                 "failed to refresh did doc: {err:?}. leaving stale (should we eventually do something?)"
                             );
