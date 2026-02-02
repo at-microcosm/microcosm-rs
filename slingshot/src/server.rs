@@ -755,7 +755,7 @@ pub async fn serve(
         )
         .await
     } else {
-        run(TcpListener::bind(bind.to_string()), app, shutdown).await
+        run(TcpListener::bind(bind), app, shutdown).await
     }
 }
 

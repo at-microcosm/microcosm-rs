@@ -165,19 +165,16 @@ async fn go<B: StoreBackground + 'static>(
     Ok(())
 }
 
-fn install_metrics_server(bind_metrics: std::net::SocketAddr) -> anyhow::Result<()> {
+fn install_metrics_server(bind: std::net::SocketAddr) -> anyhow::Result<()> {
     log::info!("installing metrics server...");
     PrometheusBuilder::new()
         .set_quantiles(&[0.5, 0.9, 0.99, 1.0])?
         .set_bucket_duration(Duration::from_secs(60))?
         .set_bucket_count(std::num::NonZero::new(10).unwrap()) // count * duration = 10 mins. stuff doesn't happen that fast here.
         .set_enable_unit_suffix(false) // this seemed buggy for constellation (sometimes wouldn't engage)
-        .with_http_listener(bind_metrics)
+        .with_http_listener(bind)
         .install()?;
-    log::info!(
-        "metrics server installed! listening on http://{}",
-        bind_metrics
-    );
+    log::info!("metrics server installed! listening on {bind}");
     Ok(())
 }
 

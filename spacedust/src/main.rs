@@ -138,7 +138,7 @@ async fn main() -> Result<(), String> {
 }
 
 fn install_metrics_server(
-    bind_metrics: std::net::SocketAddr,
+    bind: std::net::SocketAddr,
 ) -> Result<(), metrics_exporter_prometheus::BuildError> {
     log::info!("installing metrics server...");
     PrometheusBuilder::new()
@@ -146,11 +146,8 @@ fn install_metrics_server(
         .set_bucket_duration(std::time::Duration::from_secs(300))?
         .set_bucket_count(std::num::NonZero::new(12).unwrap()) // count * duration = 60 mins. stuff doesn't happen that fast here.
         .set_enable_unit_suffix(false) // this seemed buggy for constellation (sometimes wouldn't engage)
-        .with_http_listener(bind_metrics)
+        .with_http_listener(bind)
         .install()?;
-    log::info!(
-        "metrics server installed! listening on http://{}",
-        bind_metrics
-    );
+    log::info!("metrics server installed! listening on {bind}");
     Ok(())
 }
