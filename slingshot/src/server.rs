@@ -9,6 +9,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use poem::{
@@ -609,12 +610,20 @@ impl Xrpc {
 
         let at_uri = format!("at://{}/{}/{}", &*did, &*collection, &*rkey);
 
+        metrics::counter!("slingshot_get_record").increment(1);
         let fr = self
             .cache
             .get_or_fetch(&at_uri, {
                 let cid = cid.clone();
                 let repo_api = self.repo.clone();
-                || async move { repo_api.get_record(&did, &collection, &rkey, &cid).await }
+                || async move {
+                    let t0 = Instant::now();
+                    let res = repo_api.get_record(&did, &collection, &rkey, &cid).await;
+                    let success = if res.is_ok() { "true" } else { "false" };
+                    metrics::histogram!("slingshot_fetch_record", "success" => success)
+                        .record(t0.elapsed());
+                    res
+                }
             })
             .await;
 
@@ -690,7 +699,6 @@ impl Xrpc {
     }
 
     // TODO
-    // #[oai(path = "/com.atproto.identity.resolveHandle", method = "get")]
     // #[oai(path = "/com.atproto.identity.resolveDid", method = "get")]
     // but these are both not specified to do bidirectional validation, which is what we want to offer
     // com.atproto.identity.resolveIdentity seems right, but requires returning the full did-doc
@@ -699,8 +707,9 @@ impl Xrpc {
     //  handle -> verified did + pds url
     //
     // we could do horrible things and implement resolveIdentity with only a stripped-down fake did doc
-    // but this will *definitely* cause problems because eg. we're not currently storing pubkeys and
-    // those are a little bit important
+    // but this will *definitely* cause problems probably
+    //
+    // resolveMiniDoc gets most of this well enough.
 }
 
 #[derive(Debug, Clone, Serialize)]

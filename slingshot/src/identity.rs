@@ -11,7 +11,7 @@ use std::sync::Arc;
 /// 1. handle -> DID resolution: getRecord must accept a handle for `repo` param
 /// 2. DID -> PDS resolution: so we know where to getRecord
 /// 3. DID -> handle resolution: for bidirectional handle validation and in case we want to offer this
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -264,22 +264,31 @@ impl Identity {
         handle: &Handle,
     ) -> Result<Option<Did>, IdentityError> {
         let key = IdentityKey::Handle(handle.clone());
+        metrics::counter!("slingshot_get_handle").increment(1);
         let entry = self
             .cache
             .get_or_fetch(&key, {
                 let handle = handle.clone();
                 let resolver = self.handle_resolver.clone();
                 || async move {
-                    match resolver.resolve(&handle).await {
-                        Ok(did) => Ok(IdentityVal(UtcDateTime::now(), IdentityData::Did(did))),
-                        Err(atrium_identity::Error::NotFound) => {
-                            Ok(IdentityVal(UtcDateTime::now(), IdentityData::NotFound))
-                        }
+                    let t0 = Instant::now();
+                    let (res, success) = match resolver.resolve(&handle).await {
+                        Ok(did) => (
+                            Ok(IdentityVal(UtcDateTime::now(), IdentityData::Did(did))),
+                            "true",
+                        ),
+                        Err(atrium_identity::Error::NotFound) => (
+                            Ok(IdentityVal(UtcDateTime::now(), IdentityData::NotFound)),
+                            "false",
+                        ),
                         Err(other) => {
                             log::debug!("other error resolving handle: {other:?}");
-                            Err(IdentityError::ResolutionFailed(other))
+                            (Err(IdentityError::ResolutionFailed(other)), "false")
                         }
-                    }
+                    };
+                    metrics::histogram!("slingshot_fetch_handle", "success" => success)
+                        .record(t0.elapsed());
+                    res
                 }
             })
             .await?;
@@ -314,28 +323,38 @@ impl Identity {
         did: &Did,
     ) -> Result<Option<PartialMiniDoc>, IdentityError> {
         let key = IdentityKey::Did(did.clone());
+        metrics::counter!("slingshot_get_did_doc").increment(1);
         let entry = self
             .cache
             .get_or_fetch(&key, {
                 let did = did.clone();
                 let resolver = self.did_resolver.clone();
                 || async move {
-                    match resolver.resolve(&did).await {
-                        Ok(did_doc) => {
+                    let t0 = Instant::now();
+                    let (res, success) = match resolver.resolve(&did).await {
+                        Ok(did_doc) if did_doc.id != did.to_string() => (
                             // TODO: fix in atrium: should verify id is did
-                            if did_doc.id != did.to_string() {
-                                return Err(IdentityError::BadDidDoc(
-                                    "did doc's id did not match did".to_string(),
-                                ));
-                            }
-                            let mini_doc = did_doc.try_into().map_err(IdentityError::BadDidDoc)?;
-                            Ok(IdentityVal(UtcDateTime::now(), IdentityData::Doc(mini_doc)))
-                        }
-                        Err(atrium_identity::Error::NotFound) => {
-                            Ok(IdentityVal(UtcDateTime::now(), IdentityData::NotFound))
-                        }
-                        Err(other) => Err(IdentityError::ResolutionFailed(other)),
-                    }
+                            Err(IdentityError::BadDidDoc(
+                                "did doc's id did not match did".to_string(),
+                            )),
+                            "false",
+                        ),
+                        Ok(did_doc) => match did_doc.try_into() {
+                            Ok(mini_doc) => (
+                                Ok(IdentityVal(UtcDateTime::now(), IdentityData::Doc(mini_doc))),
+                                "true",
+                            ),
+                            Err(e) => (Err(IdentityError::BadDidDoc(e)), "false"),
+                        },
+                        Err(atrium_identity::Error::NotFound) => (
+                            Ok(IdentityVal(UtcDateTime::now(), IdentityData::NotFound)),
+                            "false",
+                        ),
+                        Err(other) => (Err(IdentityError::ResolutionFailed(other)), "false"),
+                    };
+                    metrics::histogram!("slingshot_fetch_did_doc", "success" => success)
+                        .record(t0.elapsed());
+                    res
                 }
             })
             .await?;
