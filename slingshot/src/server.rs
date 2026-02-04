@@ -55,7 +55,7 @@ fn example_signing_key() -> String {
     "zQ3shpq1g134o7HGDb86CtQFxnHqzx5pZWknrVX2Waum3fF6j".to_string()
 }
 
-#[derive(Object)]
+#[derive(Debug, Object)]
 #[oai(example = true)]
 struct XrpcErrorResponseObject {
     /// Should correspond an error `name` in the lexicon errors array
@@ -215,7 +215,7 @@ struct ProxyHydrationRecordFound {
 
 #[derive(Object)]
 struct ProxyHydrationIdentifierFound {
-    record: MiniDocResponseObject,
+    mini_doc: MiniDocResponseObject,
 }
 
 // todo: there's gotta be a supertrait that collects these?
@@ -597,19 +597,23 @@ impl Xrpc {
         #[oai(example = "example_handle")]
         Query(identifier): Query<String>,
     ) -> ResolveMiniIDResponse {
+        Self::resolve_mini_doc_impl(&identifier, self.identity.clone()).await
+    }
+
+    async fn resolve_mini_doc_impl(identifier: &str, identity: Identity) -> ResolveMiniIDResponse {
         let invalid = |reason: &'static str| {
             ResolveMiniIDResponse::BadRequest(xrpc_error("InvalidRequest", reason))
         };
 
         let mut unverified_handle = None;
-        let did = match Did::new(identifier.clone()) {
+        let did = match Did::new(identifier.to_string()) {
             Ok(did) => did,
             Err(_) => {
                 let Ok(alleged_handle) = Handle::new(identifier.to_lowercase()) else {
                     return invalid("Identifier was not a valid DID or handle");
                 };
 
-                match self.identity.handle_to_did(alleged_handle.clone()).await {
+                match identity.handle_to_did(alleged_handle.clone()).await {
                     Ok(res) => {
                         if let Some(did) = res {
                             // we did it joe
@@ -627,7 +631,7 @@ impl Xrpc {
                 }
             }
         };
-        let Ok(partial_doc) = self.identity.did_to_partial_mini_doc(&did).await else {
+        let Ok(partial_doc) = identity.did_to_partial_mini_doc(&did).await else {
             return invalid("Failed to get DID doc");
         };
         let Some(partial_doc) = partial_doc else {
@@ -647,8 +651,7 @@ impl Xrpc {
                 "handle.invalid".to_string()
             }
         } else {
-            let Ok(handle_did) = self
-                .identity
+            let Ok(handle_did) = identity
                 .handle_to_did(partial_doc.unverified_handle.clone())
                 .await
             else {
@@ -782,13 +785,24 @@ impl Xrpc {
                             }
                             let mut u = url::Url::parse("https://example.com").unwrap();
                             u.query_pairs_mut().append_pair("identifier", &id);
-                            identifiers.insert(id, Hydration::Pending(ProxyHydrationPending {
+                            identifiers.insert(id.clone(), Hydration::Pending(ProxyHydrationPending {
                                 url: format!("/xrpc/blue.microcosm.identity.resolveMiniDoc?{}", u.query().unwrap()), // gross
                             }));
                             let tx = tx.clone();
-                            // let doc_fut = self.resolve_mini_doc();
-                            tokio::task::spawn(async {
-
+                            let identity = self.identity.clone();
+                            tokio::task::spawn(async move {
+                                let res = match Self::resolve_mini_doc_impl(&id, identity).await {
+                                    ResolveMiniIDResponse::Ok(Json(mini_doc)) => Hydration::Found(ProxyHydrationIdentifierFound {
+                                        mini_doc
+                                    }),
+                                    ResolveMiniIDResponse::BadRequest(e) => {
+                                        log::warn!("minidoc fail: {:?}", e.0);
+                                        Hydration::Error(ProxyHydrationError {
+                                            reason: "failed to resolve mini doc".to_string(),
+                                        })
+                                    }
+                                };
+                                tx.send(GetThing::Identifier(id, res)).await
                             });
                         }
                     }
