@@ -45,6 +45,9 @@ struct Args {
     #[arg(short, long)]
     #[clap(value_enum, default_value_t = StorageBackend::Memory)]
     backend: StorageBackend,
+    /// Serve a did:web document for this domain
+    #[arg(long)]
+    did_web_domain: Option<String>,
     /// Initiate a database backup into this dir, if supported by the storage
     #[arg(long)]
     backup: Option<PathBuf>,
@@ -103,6 +106,7 @@ fn main() -> Result<()> {
             MemStorage::new(),
             fixture,
             None,
+            args.did_web_domain,
             stream,
             bind,
             metrics_bind,
@@ -138,6 +142,7 @@ fn main() -> Result<()> {
                         rocks,
                         fixture,
                         args.data,
+                        args.did_web_domain,
                         stream,
                         bind,
                         metrics_bind,
@@ -159,6 +164,7 @@ fn run(
     mut storage: impl LinkStorage,
     fixture: Option<PathBuf>,
     data_dir: Option<PathBuf>,
+    did_web_domain: Option<String>,
     stream: String,
     bind: SocketAddr,
     metrics_bind: SocketAddr,
@@ -211,7 +217,7 @@ fn run(
                         if collect_metrics {
                             install_metrics_server(metrics_bind)?;
                         }
-                        serve(readable, bind, staying_alive).await
+                        serve(readable, bind, did_web_domain, staying_alive).await
                     })
                     .unwrap();
                 stay_alive.drop_guard();

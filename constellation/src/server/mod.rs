@@ -3,7 +3,7 @@ use axum::{
     extract::{Query, Request},
     http::{self, header},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Json, Response},
     routing::get,
     Router,
 };
@@ -37,12 +37,25 @@ fn to500(e: tokio::task::JoinError) -> http::StatusCode {
     http::StatusCode::INTERNAL_SERVER_ERROR
 }
 
-pub async fn serve<S, A>(store: S, addr: A, stay_alive: CancellationToken) -> anyhow::Result<()>
-where
-    S: LinkReader,
-    A: ToSocketAddrs,
-{
-    let app = Router::new()
+pub async fn serve<S: LinkReader, A: ToSocketAddrs>(
+    store: S,
+    addr: A,
+    did_web_domain: Option<String>,
+    stay_alive: CancellationToken,
+) -> anyhow::Result<()> {
+    let mut app = Router::new();
+
+    if let Some(d) = did_web_domain {
+        app = app.route(
+            "/.well-known/did.json",
+            get({
+                let domain = d.clone();
+                move || did_web(domain)
+            }),
+        )
+    }
+
+    let app = app
         .route("/robots.txt", get(robots))
         .route(
             "/",
@@ -204,7 +217,19 @@ async fn robots() -> &'static str {
 User-agent: *
 Disallow: /links
 Disallow: /links/
+Disallow: /xrpc/
     "
+}
+
+async fn did_web(domain: String) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "id": format!("did:web:{domain}"),
+        "service": [{
+            "id": "#constellation",
+            "type": "ConstellationGraphService",
+            "serviceEndpoint": format!("https://{domain}")
+        }]
+    }))
 }
 
 #[derive(Template, Serialize, Deserialize)]
