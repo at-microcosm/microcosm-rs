@@ -1,15 +1,15 @@
 use crate::{
-    CachedRecord, ErrorResponseObject, Identity, Repo,
+    CachedRecord, ErrorResponseObject, Identity, Proxy, Repo,
     error::{RecordError, ServerError},
+    proxy::{extract_links, MatchedRef},
+    record::RawRecord,
 };
 use atrium_api::types::string::{Cid, Did, Handle, Nsid, RecordKey};
 use foyer::HybridCache;
 use links::at_uri::parse_at_uri as normalize_at_uri;
 use serde::Serialize;
-use std::path::PathBuf;
-use std::str::FromStr;
-use std::sync::Arc;
-use std::time::Instant;
+use std::{path::PathBuf, str::FromStr, sync::Arc, time::Instant, collections::HashMap};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use poem::{
@@ -24,6 +24,7 @@ use poem::{
 };
 use poem_openapi::{
     ApiResponse, ContactObject, ExternalDocumentObject, Object, OpenApi, OpenApiService, Tags,
+    Union,
     param::Query, payload::Json, types::Example,
 };
 
@@ -87,6 +88,13 @@ fn bad_request_handler_get_record(err: poem::Error) -> GetRecordResponse {
 
 fn bad_request_handler_resolve_mini(err: poem::Error) -> ResolveMiniIDResponse {
     ResolveMiniIDResponse::BadRequest(Json(XrpcErrorResponseObject {
+        error: "InvalidRequest".to_string(),
+        message: format!("Bad request, here's some info that maybe should not be exposed: {err}"),
+    }))
+}
+
+fn bad_request_handler_proxy_query(err: poem::Error) -> ProxyHydrateResponse {
+    ProxyHydrateResponse::BadRequest(Json(XrpcErrorResponseObject {
         error: "InvalidRequest".to_string(),
         message: format!("Bad request, here's some info that maybe should not be exposed: {err}"),
     }))
@@ -191,6 +199,119 @@ enum ResolveMiniIDResponse {
 }
 
 #[derive(Object)]
+struct ProxyHydrationError {
+    reason: String,
+}
+
+#[derive(Object)]
+struct ProxyHydrationPending {
+    url: String,
+}
+
+#[derive(Object)]
+struct ProxyHydrationRecordFound {
+    record: serde_json::Value,
+}
+
+#[derive(Object)]
+struct ProxyHydrationIdentifierFound {
+    record: MiniDocResponseObject,
+}
+
+// todo: there's gotta be a supertrait that collects these?
+use poem_openapi::types::{Type, ToJSON, ParseFromJSON, IsObjectType};
+
+#[derive(Union)]
+#[oai(discriminator_name = "status", rename_all = "camelCase")]
+enum Hydration<T: Send + Sync + Type + ToJSON + ParseFromJSON + IsObjectType> {
+    Error(ProxyHydrationError),
+    Pending(ProxyHydrationPending),
+    Found(T),
+}
+
+#[derive(Object)]
+#[oai(example = true)]
+struct ProxyHydrateResponseObject {
+    /// The original upstream response content
+    output: serde_json::Value,
+    /// Any hydrated records
+    records: HashMap<String, Hydration<ProxyHydrationRecordFound>>,
+    /// Any hydrated identifiers
+    identifiers: HashMap<String, Hydration<ProxyHydrationIdentifierFound>>,
+}
+impl Example for ProxyHydrateResponseObject {
+    fn example() -> Self {
+        Self {
+            output: serde_json::json!({}),
+            records: HashMap::from([
+                ("asdf".into(), Hydration::Pending(ProxyHydrationPending { url: "todo".into() })),
+            ]),
+            identifiers: HashMap::new(),
+        }
+    }
+}
+
+#[derive(ApiResponse)]
+#[oai(bad_request_handler = "bad_request_handler_proxy_query")]
+enum ProxyHydrateResponse {
+    #[oai(status = 200)]
+    Ok(Json<ProxyHydrateResponseObject>),
+    #[oai(status = 400)]
+    BadRequest(XrpcError)
+}
+
+#[derive(Object)]
+pub struct HydrationSource {
+    /// Record Path syntax for locating fields
+    pub path: String,
+    /// What to expect at the path: 'strong-ref', 'at-uri', 'at-uri-parts', 'did', 'handle', or 'at-identifier'.
+    ///
+    /// - `strong-ref`: object in the shape of `com.atproto.repo.strongRef` with `uri` and `cid` keys.
+    /// - `at-uri`: string, must have all segments present (identifier, collection, rkey)
+    /// - `at-uri-parts`: object with keys (`repo` or `did`), `collection`, `rkey`, and optional `cid`. Other keys may be present and will be ignored.
+    /// - `did`: string, `did` format
+    /// - `handle`: string, `handle` format
+    /// - `at-identifier`: string, `did` or `handle` format
+    pub shape: String,
+}
+
+#[derive(Object)]
+#[oai(example = true)]
+struct ProxyQueryPayload {
+    /// The NSID of the XRPC you wish to forward
+    xrpc: String,
+    /// The destination service the request will be forwarded to
+    atproto_proxy: String,
+    /// The `params` for the destination service XRPC endpoint
+    ///
+    /// Currently this will be passed along unchecked, but a future version of
+    /// slingshot may attempt to do lexicon resolution to validate `params`
+    /// based on the upstream service
+    params: Option<serde_json::Value>,
+    /// Paths within the response to look for at-uris that can be hydrated
+    hydration_sources: Vec<HydrationSource>,
+    // todo: deadline thing
+
+}
+impl Example for ProxyQueryPayload {
+    fn example() -> Self {
+        Self {
+            xrpc: "app.bsky.feed.getFeedSkeleton".to_string(),
+            atproto_proxy: "did:web:blue.mackuba.eu#bsky_fg".to_string(),
+            params: Some(serde_json::json!({
+                "feed": "at://did:plc:oio4hkxaop4ao4wz2pp3f4cr/app.bsky.feed.generator/atproto",
+            })),
+            hydration_sources: vec![
+                HydrationSource {
+                    path: "feed[].post".to_string(),
+                    shape: "at-uri".to_string(),
+                }
+            ],
+        }
+    }
+}
+
+#[derive(Object)]
 #[oai(example = true)]
 struct FoundDidResponseObject {
     /// the DID, bi-directionally verified if using Slingshot
@@ -221,6 +342,7 @@ enum JustDidResponse {
 struct Xrpc {
     cache: HybridCache<String, CachedRecord>,
     identity: Identity,
+    proxy: Arc<Proxy>,
     repo: Arc<Repo>,
 }
 
@@ -550,6 +672,152 @@ impl Xrpc {
         }))
     }
 
+    /// com.bad-example.proxy.hydrateQueryResponse
+    ///
+    /// > [!important]
+    /// > Unstable! This endpoint is experimental and may change.
+    ///
+    /// Fetch + include records referenced from an upstream xrpc query response
+    #[oai(
+        path = "/com.bad-example.proxy.hydrateQueryResponse",
+        method = "post",
+        tag = "ApiTags::Custom"
+    )]
+    async fn proxy_hydrate_query(
+        &self,
+        Json(payload): Json<ProxyQueryPayload>,
+    ) -> ProxyHydrateResponse {
+        // TODO: the Accept request header, if present, gotta be json
+        // TODO: find any Authorization header and verify it. TBD about `aud`.
+
+        let params = if let Some(p) = payload.params {
+            let serde_json::Value::Object(map) = p else {
+                panic!("params have to be an object");
+            };
+            Some(map)
+        } else { None };
+
+        match self.proxy.proxy(
+            payload.xrpc,
+            payload.atproto_proxy,
+            params,
+        ).await {
+            Ok(skeleton) => {
+                let links = match extract_links(payload.hydration_sources, &skeleton) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        log::warn!("problem extracting: {e:?}");
+                        return ProxyHydrateResponse::BadRequest(xrpc_error("oop", "sorry, error extracting"))
+                    }
+                };
+                let mut records = HashMap::new();
+                let mut identifiers = HashMap::new();
+
+                enum GetThing {
+                    Record(String, Hydration<ProxyHydrationRecordFound>),
+                    Identifier(String, Hydration<ProxyHydrationIdentifierFound>),
+                }
+
+                let (tx, mut rx) = mpsc::channel(1);
+
+                for link in links {
+                    match link {
+                        MatchedRef::AtUri { uri, cid } => {
+                            if records.contains_key(&uri) {
+                                log::warn!("skipping duplicate record without checking cid");
+                                continue;
+                            }
+                            let mut u = url::Url::parse("https://example.com").unwrap();
+                            u.query_pairs_mut().append_pair("at_uri", &uri); // BLEH todo
+                            records.insert(uri.clone(), Hydration::Pending(ProxyHydrationPending {
+                                url: format!("/xrpc/blue.microcosm.repo.getRecordByUri?{}", u.query().unwrap()), // TODO better; with cid, etc.
+                            }));
+                            let tx = tx.clone();
+                            let identity = self.identity.clone();
+                            let repo = self.repo.clone();
+                            tokio::task::spawn(async move {
+                                let rest = uri.strip_prefix("at://").unwrap();
+                                let (identifier, rest) = rest.split_once('/').unwrap();
+                                let (collection, rkey) = rest.split_once('/').unwrap();
+
+                                let did = if identifier.starts_with("did:") {
+                                    Did::new(identifier.to_string()).unwrap()
+                                } else {
+                                    let handle = Handle::new(identifier.to_string()).unwrap();
+                                    identity.handle_to_did(handle).await.unwrap().unwrap()
+                                };
+
+                                let res = match repo.get_record(
+                                    &did,
+                                    &Nsid::new(collection.to_string()).unwrap(),
+                                    &RecordKey::new(rkey.to_string()).unwrap(),
+                                    &cid.as_ref().map(|s| Cid::from_str(s).unwrap()),
+                                ).await {
+                                    Ok(CachedRecord::Deleted) =>
+                                        Hydration::Error(ProxyHydrationError {
+                                            reason: "record deleted".to_string(),
+                                        }),
+                                    Ok(CachedRecord::Found(RawRecord { cid: found_cid, record })) => {
+                                        if let Some(c) = cid && found_cid.as_ref().to_string() != c {
+                                            log::warn!("ignoring cid mismatch");
+                                        }
+                                        let value = serde_json::from_str(&record).unwrap();
+                                        Hydration::Found(ProxyHydrationRecordFound {
+                                            record: value,
+                                        })
+                                    }
+                                    Err(e) => {
+                                        log::warn!("finally oop {e:?}");
+                                        Hydration::Error(ProxyHydrationError {
+                                            reason: "failed to fetch record".to_string(),
+                                        })
+                                    }
+                                };
+                                tx.send(GetThing::Record(uri, res)).await
+                            });
+                        }
+                        MatchedRef::Identifier(id) => {
+                            if identifiers.contains_key(&id) {
+                                continue;
+                            }
+                            let mut u = url::Url::parse("https://example.com").unwrap();
+                            u.query_pairs_mut().append_pair("identifier", &id);
+                            identifiers.insert(id, Hydration::Pending(ProxyHydrationPending {
+                                url: format!("/xrpc/blue.microcosm.identity.resolveMiniDoc?{}", u.query().unwrap()), // gross
+                            }));
+                            let tx = tx.clone();
+                            // let doc_fut = self.resolve_mini_doc();
+                            tokio::task::spawn(async {
+
+                            });
+                        }
+                    }
+                }
+                // so the channel can close when all are completed
+                // (we shoudl be doing a timeout...)
+                drop(tx);
+
+                while let Some(hydration) = rx.recv().await {
+                    match hydration {
+                        GetThing::Record(uri, h) => { records.insert(uri, h); }
+                        GetThing::Identifier(uri, md) => { identifiers.insert(uri, md); }
+                    };
+                }
+
+                ProxyHydrateResponse::Ok(Json(ProxyHydrateResponseObject {
+                    output: skeleton,
+                    records,
+                    identifiers,
+                }))
+            }
+            Err(e) => {
+                log::warn!("oh no: {e:?}");
+                ProxyHydrateResponse::BadRequest(xrpc_error("oop", "sorry"))
+            }
+        }
+
+    }
+
     async fn get_record_impl(
         &self,
         repo: String,
@@ -748,6 +1016,7 @@ pub async fn serve(
     cache: HybridCache<String, CachedRecord>,
     identity: Identity,
     repo: Repo,
+    proxy: Proxy,
     acme_domain: Option<String>,
     acme_contact: Option<String>,
     acme_cache_path: Option<PathBuf>,
@@ -756,10 +1025,12 @@ pub async fn serve(
     bind: std::net::SocketAddr,
 ) -> Result<(), ServerError> {
     let repo = Arc::new(repo);
+    let proxy = Arc::new(proxy);
     let api_service = OpenApiService::new(
         Xrpc {
             cache,
             identity,
+            proxy,
             repo,
         },
         "Slingshot",
@@ -823,7 +1094,7 @@ where
         .with(
             Cors::new()
                 .allow_origin_regex("*")
-                .allow_methods([Method::GET])
+                .allow_methods([Method::GET, Method::POST])
                 .allow_credentials(false),
         )
         .with(CatchPanic::new())

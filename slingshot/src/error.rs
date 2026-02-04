@@ -91,3 +91,13 @@ pub enum RecordError {
     #[error("upstream non-atproto bad request")]
     UpstreamBadBadNotGoodRequest(reqwest::Error),
 }
+
+#[derive(Debug, Error)]
+pub enum ProxyError {
+    #[error("failed to parse path: {0}")]
+    PathParseError(String),
+    #[error(transparent)]
+    UrlParseError(#[from] url::ParseError),
+    #[error(transparent)]
+    ReqwestError(#[from] reqwest::Error),
+}

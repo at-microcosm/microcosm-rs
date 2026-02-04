@@ -2,7 +2,7 @@
 // use foyer::{Engine, DirectFsDeviceOptions, HybridCacheBuilder};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use slingshot::{
-    Identity, Repo, consume, error::MainTaskError, firehose_cache, healthcheck, serve,
+    Identity, Proxy, Repo, consume, error::MainTaskError, firehose_cache, healthcheck, serve,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -143,16 +143,16 @@ async fn main() -> Result<(), String> {
     )
     .await
     .map_err(|e| format!("identity setup failed: {e:?}"))?;
-
-    log::info!("identity service ready.");
     let identity_refresher = identity.clone();
     let identity_shutdown = shutdown.clone();
     tasks.spawn(async move {
         identity_refresher.run_refresher(identity_shutdown).await?;
         Ok(())
     });
+    log::info!("identity service ready.");
 
     let repo = Repo::new(identity.clone());
+    let proxy = Proxy::new(repo.clone());
 
     let identity_for_server = identity.clone();
     let server_shutdown = shutdown.clone();
@@ -163,6 +163,7 @@ async fn main() -> Result<(), String> {
             server_cache_handle,
             identity_for_server,
             repo,
+            proxy,
             args.acme_domain,
             args.acme_contact,
             args.acme_cache_path,

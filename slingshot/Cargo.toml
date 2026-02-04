@@ -28,4 +28,4 @@ time = { version = "0.3.41", features = ["serde"] }
 tokio = { version = "1.47.0", features = ["full"] }
 tokio-util = "0.7.15"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
-url = "2.5.4"
+url = { version = "2.5.4", features = ["serde"] }
