@@ -152,7 +152,7 @@ async fn main() -> Result<(), String> {
     log::info!("identity service ready.");
 
     let repo = Repo::new(identity.clone());
-    let proxy = Proxy::new(repo.clone());
+    let proxy = Proxy::new(repo.clone(), identity.clone());
 
     let identity_for_server = identity.clone();
     let server_shutdown = shutdown.clone();

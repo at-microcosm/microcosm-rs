@@ -716,6 +716,9 @@ impl Xrpc {
     /// com.bad-example.identity.resolveService
     ///
     /// resolve an atproto service did + id to its http endpoint
+    ///
+    /// > [!important]
+    /// > this endpoint is experimental and may change
     #[oai(
         path = "/com.bad-example.identity.resolveService",
         method = "get",
@@ -794,9 +797,22 @@ impl Xrpc {
             Some(map)
         } else { None };
 
+        let Some((service_did, id_fragment)) = payload.atproto_proxy.rsplit_once("#") else {
+            return ProxyHydrateResponse::BadRequest(xrpc_error("BadParameter", "atproto_proxy could not be understood"));
+        };
+
+        let Ok(service_did) = service_did.parse() else {
+            return ProxyHydrateResponse::BadRequest(xrpc_error("BadParameter", "atproto_proxy service did could not be parsed"));
+        };
+
+        let Ok(xrpc) = payload.xrpc.parse() else {
+            return ProxyHydrateResponse::BadRequest(xrpc_error("BadParameter", "invalid NSID for xrpc param"));
+        };
+
         match self.proxy.proxy(
-            payload.xrpc,
-            payload.atproto_proxy,
+            &service_did,
+            &format!("#{id_fragment}"),
+            &xrpc,
             params,
         ).await {
             Ok(skeleton) => {

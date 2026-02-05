@@ -1,7 +1,7 @@
-use serde::Deserialize;
+use atrium_api::types::string::{Did, Nsid};
 use url::Url;
 use std::{collections::HashMap, time::Duration};
-use crate::{Repo, server::HydrationSource, error::ProxyError};
+use crate::{Repo, Identity, server::HydrationSource, error::ProxyError};
 use reqwest::Client;
 use serde_json::{Map, Value};
 
@@ -71,11 +71,12 @@ impl TryFrom<Map<String, Value>> for Params {
 #[derive(Clone)]
 pub struct Proxy {
     repo: Repo,
+    identity: Identity,
     client: Client,
 }
 
 impl Proxy {
-    pub fn new(repo: Repo) -> Self {
+    pub fn new(repo: Repo, identity: Identity) -> Self {
         let client = Client::builder()
             .user_agent(format!(
                 "microcosm slingshot v{} (contact: @bad-example.com)",
@@ -85,57 +86,28 @@ impl Proxy {
             .timeout(Duration::from_secs(6))
             .build()
             .unwrap();
-        Self { repo, client }
+        Self { repo, client, identity }
     }
 
     pub async fn proxy(
         &self,
-        xrpc: String,
-        service: String,
+        service_did: &Did,
+        service_id: &str,
+        xrpc: &Nsid,
         params: Option<Map<String, Value>>,
     ) -> Result<Value, ProxyError> {
 
-        // hackin it to start
-
-        // 1. assume did-web (TODO) and get the did doc
-        #[derive(Debug, Deserialize)]
-        struct ServiceDoc {
-            id: String,
-            service: Vec<ServiceItem>,
-        }
-        #[derive(Debug, Deserialize)]
-        struct ServiceItem {
-            id: String,
-            #[expect(unused)]
-            r#type: String,
-            #[serde(rename = "serviceEndpoint")]
-            service_endpoint: Url,
-        }
-        let dw = service.strip_prefix("did:web:").expect("a did web");
-        let (dw, service_id) = dw.split_once("#").expect("whatever");
-        let mut dw_url = Url::parse(&format!("https://{dw}"))?;
-        dw_url.set_path("/.well-known/did.json");
-        let doc: ServiceDoc = self.client
-            .get(dw_url)
-            .send()
+        let mut upstream: Url = self
+            .identity
+            .did_to_mini_service_doc(service_did)
             .await?
-            .error_for_status()?
-            .json()
-            .await?;
+            .ok_or(ProxyError::ServiceNotFound)?
+            .get(service_id, None)
+            .ok_or(ProxyError::ServiceNotMatched)?
+            .endpoint
+            .parse()?;
 
-        assert_eq!(doc.id, format!("did:web:{}", dw));
-
-        let mut upstream = None;
-        for ServiceItem { id, service_endpoint, .. } in doc.service {
-            let Some((_, id)) = id.split_once("#") else { continue; };
-            if id != service_id { continue; };
-            upstream = Some(service_endpoint);
-            break;
-        }
-
-        // 2. proxy the request forward
-        let mut upstream = upstream.expect("to find it");
-        upstream.set_path(&format!("/xrpc/{xrpc}")); // TODO: validate nsid
+        upstream.set_path(&format!("/xrpc/{}", xrpc.as_str()));
 
         if let Some(params) = params {
             let mut query = upstream.query_pairs_mut();

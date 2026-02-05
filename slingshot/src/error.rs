@@ -100,4 +100,10 @@ pub enum ProxyError {
     UrlParseError(#[from] url::ParseError),
     #[error(transparent)]
     ReqwestError(#[from] reqwest::Error),
+    #[error(transparent)]
+    IdentityError(#[from] IdentityError),
+    #[error("upstream service could not be resolved")]
+    ServiceNotFound,
+    #[error("upstream service was found but no services matched")]
+    ServiceNotMatched,
 }
