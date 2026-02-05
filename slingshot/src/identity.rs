@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::IdentityError;
 use atrium_api::{
-    did_doc::DidDocument,
+    did_doc::{DidDocument, Service as DidDocServic},
     types::string::{Did, Handle},
 };
 use atrium_common::resolver::Resolver;
@@ -41,6 +41,7 @@ const MIN_NOT_FOUND_TTL: Duration = Duration::from_secs(60);
 pub enum IdentityKey {
     Handle(Handle),
     Did(Did),
+    ServiceDid(Did),
 }
 
 impl IdentityKey {
@@ -48,6 +49,7 @@ impl IdentityKey {
         let s = match self {
             IdentityKey::Handle(h) => h.as_str(),
             IdentityKey::Did(d) => d.as_str(),
+            IdentityKey::ServiceDid(d) => d.as_str(),
         };
         std::mem::size_of::<Self>() + std::mem::size_of_val(s)
     }
@@ -59,8 +61,9 @@ struct IdentityVal(UtcDateTime, IdentityData);
 #[derive(Debug, Serialize, Deserialize)]
 enum IdentityData {
     NotFound,
-    Did(Did),
-    Doc(PartialMiniDoc),
+    Did(Did), // from handle
+    Doc(PartialMiniDoc), // from did
+    ServiceDoc(MiniServiceDoc), // from service did
 }
 
 impl IdentityVal {
@@ -71,9 +74,19 @@ impl IdentityVal {
             IdentityData::Did(d) => std::mem::size_of_val(d.as_str()),
             IdentityData::Doc(d) => {
                 std::mem::size_of_val(d.unverified_handle.as_str())
-                    + std::mem::size_of_val(d.pds.as_str())
-                    + std::mem::size_of_val(d.signing_key.as_str())
+                    + std::mem::size_of_val(&d.pds)
+                    + std::mem::size_of_val(&d.signing_key)
             }
+            IdentityData::ServiceDoc(d) => {
+                let mut s = std::mem::size_of::<MiniServiceDoc>();
+                s += std::mem::size_of_val(&d.services);
+                for sv in &d.services {
+                    s += std::mem::size_of_val(&sv.full_id);
+                    s += std::mem::size_of_val(&sv.r#type);
+                    s += std::mem::size_of_val(&sv.endpoint);
+                }
+                s
+            },
         };
         wrapping + inner
     }
@@ -165,6 +178,60 @@ impl TryFrom<DidDocument> for PartialMiniDoc {
             pds,
             signing_key,
         })
+    }
+}
+
+/// Simplified info from service DID docs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MiniServiceDoc {
+    services: Vec<MiniService>,
+}
+
+impl MiniServiceDoc {
+    pub fn get(&self, id_fragment: &str, service_type: Option<&str>) -> Option<&MiniService> {
+        self.services
+            .iter()
+            .find(|MiniService { full_id, r#type, .. }|
+                full_id.ends_with(id_fragment)
+                    && service_type
+                        .map(|t| t == *r#type)
+                        .unwrap_or(true))
+    }
+}
+
+/// The corresponding service info
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MiniService {
+    /// The full id
+    ///
+    /// for informational purposes only -- services are deduplicated by id fragment
+    full_id: String,
+    r#type: String,
+    /// HTTP endpoint for the actual service
+    pub endpoint: String,
+}
+
+impl TryFrom<DidDocument> for MiniServiceDoc {
+    type Error = String;
+    fn try_from(did_doc: DidDocument) -> Result<Self, Self::Error> {
+        let mut services = Vec::new();
+        let mut seen = HashSet::new();
+
+        for DidDocServic { id, r#type, service_endpoint } in did_doc.service.unwrap_or(vec![]) {
+            let Some((_, id_fragment)) = id.rsplit_once('#') else {
+                continue;
+            };
+            if !seen.insert((id_fragment.to_string(), r#type.clone())) {
+                continue;
+            }
+            services.push(MiniService {
+                full_id: id,
+                r#type,
+                endpoint: service_endpoint,
+            });
+        }
+
+        Ok(Self { services })
     }
 }
 
@@ -296,10 +363,6 @@ impl Identity {
         let now = UtcDateTime::now();
         let IdentityVal(last_fetch, data) = entry.value();
         match data {
-            IdentityData::Doc(_) => {
-                log::error!("identity value mixup: got a doc from a handle key (should be a did)");
-                Err(IdentityError::IdentityValTypeMixup(handle.to_string()))
-            }
             IdentityData::NotFound => {
                 if (now - *last_fetch) >= MIN_NOT_FOUND_TTL {
                     metrics::counter!("identity_handle_refresh_queued", "reason" => "ttl", "found" => "false").increment(1);
@@ -313,6 +376,10 @@ impl Identity {
                     self.queue_refresh(key).await;
                 }
                 Ok(Some(did.clone()))
+            }
+            _ => {
+                log::error!("identity value mixup: got a doc from a handle key (should be a did)");
+                Err(IdentityError::IdentityValTypeMixup(handle.to_string()))
             }
         }
     }
@@ -362,10 +429,6 @@ impl Identity {
         let now = UtcDateTime::now();
         let IdentityVal(last_fetch, data) = entry.value();
         match data {
-            IdentityData::Did(_) => {
-                log::error!("identity value mixup: got a did from a did key (should be a doc)");
-                Err(IdentityError::IdentityValTypeMixup(did.to_string()))
-            }
             IdentityData::NotFound => {
                 if (now - *last_fetch) >= MIN_NOT_FOUND_TTL {
                     metrics::counter!("identity_did_refresh_queued", "reason" => "ttl", "found" => "false").increment(1);
@@ -373,12 +436,82 @@ impl Identity {
                 }
                 Ok(None)
             }
-            IdentityData::Doc(mini_did) => {
+            IdentityData::Doc(mini_doc) => {
                 if (now - *last_fetch) >= MIN_TTL {
                     metrics::counter!("identity_did_refresh_queued", "reason" => "ttl", "found" => "true").increment(1);
                     self.queue_refresh(key).await;
                 }
-                Ok(Some(mini_did.clone()))
+                Ok(Some(mini_doc.clone()))
+            }
+            _ => {
+                log::error!("identity value mixup: got a doc from a handle key (should be a did)");
+                Err(IdentityError::IdentityValTypeMixup(did.to_string()))
+            }
+        }
+    }
+
+    /// Fetch (and cache) a service mini doc from a did
+    pub async fn did_to_mini_service_doc(
+        &self,
+        did: &Did,
+    ) -> Result<Option<MiniServiceDoc>, IdentityError> {
+        let key = IdentityKey::Did(did.clone());
+        metrics::counter!("slingshot_get_service_did_doc").increment(1);
+        let entry = self
+            .cache
+            .get_or_fetch(&key, {
+                let did = did.clone();
+                let resolver = self.did_resolver.clone();
+                || async move {
+                    let t0 = Instant::now();
+                    let (res, success) = match resolver.resolve(&did).await {
+                        Ok(did_doc) if did_doc.id != did.to_string() => (
+                            // TODO: fix in atrium: should verify id is did
+                            Err(IdentityError::BadDidDoc(
+                                "did doc's id did not match did".to_string(),
+                            )),
+                            "false",
+                        ),
+                        Ok(did_doc) => match did_doc.try_into() {
+                            Ok(mini_service_doc) => (
+                                Ok(IdentityVal(UtcDateTime::now(), IdentityData::ServiceDoc(mini_service_doc))),
+                                "true",
+                            ),
+                            Err(e) => (Err(IdentityError::BadDidDoc(e)), "false"),
+                        },
+                        Err(atrium_identity::Error::NotFound) => (
+                            Ok(IdentityVal(UtcDateTime::now(), IdentityData::NotFound)),
+                            "false",
+                        ),
+                        Err(other) => (Err(IdentityError::ResolutionFailed(other)), "false"),
+                    };
+                    metrics::histogram!("slingshot_fetch_service_did_doc", "success" => success)
+                        .record(t0.elapsed());
+                    res
+                }
+            })
+            .await?;
+
+        let now = UtcDateTime::now();
+        let IdentityVal(last_fetch, data) = entry.value();
+        match data {
+            IdentityData::NotFound => {
+                if (now - *last_fetch) >= MIN_NOT_FOUND_TTL {
+                    metrics::counter!("identity_service_did_refresh_queued", "reason" => "ttl", "found" => "false").increment(1);
+                    self.queue_refresh(key).await;
+                }
+                Ok(None)
+            }
+            IdentityData::ServiceDoc(mini_service_doc) => {
+                if (now - *last_fetch) >= MIN_TTL {
+                    metrics::counter!("identity_service_did_refresh_queued", "reason" => "ttl", "found" => "true").increment(1);
+                    self.queue_refresh(key).await;
+                }
+                Ok(Some(mini_service_doc.clone()))
+            }
+            _ => {
+                log::error!("identity value mixup: got a doc from a different key type (should be a service did)");
+                Err(IdentityError::IdentityValTypeMixup(did.to_string()))
             }
         }
     }
@@ -554,6 +687,51 @@ impl Identity {
                     }
 
                     self.complete_refresh(&task_key).await?; // failures are bugs, so break loop
+                }
+                IdentityKey::ServiceDid(ref did) => {
+                    log::trace!("refreshing service did doc: {did:?}");
+
+                    match self.did_resolver.resolve(did).await {
+                        Ok(did_doc) => {
+                            // TODO: fix in atrium: should verify id is did
+                            if did_doc.id != did.to_string() {
+                                metrics::counter!("identity_service_did_refresh", "success" => "false", "reason" => "wrong did").increment(1);
+                                log::warn!(
+                                    "refreshed did doc failed: wrong did doc id. dropping refresh."
+                                );
+                                continue;
+                            }
+                            let mini_service_doc = match did_doc.try_into() {
+                                Ok(md) => md,
+                                Err(e) => {
+                                    metrics::counter!("identity_service_did_refresh", "success" => "false", "reason" => "bad doc").increment(1);
+                                    log::warn!(
+                                        "converting mini service doc failed: {e:?}. dropping refresh."
+                                    );
+                                    continue;
+                                }
+                            };
+                            metrics::counter!("identity_service_did_refresh", "success" => "true")
+                                .increment(1);
+                            self.cache.insert(
+                                task_key.clone(),
+                                IdentityVal(UtcDateTime::now(), IdentityData::ServiceDoc(mini_service_doc)),
+                            );
+                        }
+                        Err(atrium_identity::Error::NotFound) => {
+                            metrics::counter!("identity_service_did_refresh", "success" => "false", "reason" => "not found").increment(1);
+                            self.cache.insert(
+                                task_key.clone(),
+                                IdentityVal(UtcDateTime::now(), IdentityData::NotFound),
+                            );
+                        }
+                        Err(err) => {
+                            metrics::counter!("identity_service_did_refresh", "success" => "false", "reason" => "other").increment(1);
+                            log::warn!(
+                                "failed to refresh did doc: {err:?}. leaving stale (should we eventually do something?)"
+                            );
+                        }
+                    }
                 }
             }
         }

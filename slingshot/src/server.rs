@@ -34,11 +34,17 @@ fn example_handle() -> String {
 fn example_did() -> String {
     "did:plc:hdhoaan3xa3jiuq4fg4mefid".to_string()
 }
+fn example_service_did() -> String {
+    "did:web:constellation.microcosm.blue".to_string()
+}
 fn example_collection() -> String {
     "app.bsky.feed.like".to_string()
 }
 fn example_rkey() -> String {
     "3lv4ouczo2b2a".to_string()
+}
+fn example_id_fragment() -> String {
+    "#constellation".to_string()
 }
 fn example_uri() -> String {
     format!(
@@ -86,8 +92,15 @@ fn bad_request_handler_get_record(err: poem::Error) -> GetRecordResponse {
     }))
 }
 
-fn bad_request_handler_resolve_mini(err: poem::Error) -> ResolveMiniIDResponse {
-    ResolveMiniIDResponse::BadRequest(Json(XrpcErrorResponseObject {
+fn bad_request_handler_resolve_mini(err: poem::Error) -> ResolveMiniDocResponse {
+    ResolveMiniDocResponse::BadRequest(Json(XrpcErrorResponseObject {
+        error: "InvalidRequest".to_string(),
+        message: format!("Bad request, here's some info that maybe should not be exposed: {err}"),
+    }))
+}
+
+fn bad_request_handler_resolve_service(err: poem::Error) -> ResolveServiceResponse {
+    ResolveServiceResponse::BadRequest(Json(XrpcErrorResponseObject {
         error: "InvalidRequest".to_string(),
         message: format!("Bad request, here's some info that maybe should not be exposed: {err}"),
     }))
@@ -189,13 +202,38 @@ impl Example for MiniDocResponseObject {
 
 #[derive(ApiResponse)]
 #[oai(bad_request_handler = "bad_request_handler_resolve_mini")]
-enum ResolveMiniIDResponse {
+enum ResolveMiniDocResponse {
     /// Identity resolved
     #[oai(status = 200)]
     Ok(Json<MiniDocResponseObject>),
     /// Bad request or identity not resolved
     #[oai(status = 400)]
     BadRequest(XrpcError),
+}
+
+#[derive(Object)]
+#[oai(example = true)]
+struct ServiceResponseObject {
+    /// The service endpoint URL, if found
+    endpoint: String,
+}
+impl Example for ServiceResponseObject {
+    fn example() -> Self {
+        Self {
+            endpoint: "https://example.com".to_string(),
+        }
+    }
+}
+
+#[derive(ApiResponse)]
+#[oai(bad_request_handler = "bad_request_handler_resolve_service")]
+enum ResolveServiceResponse {
+    /// Service resolved
+    #[oai(status = 200)]
+    Ok(Json<ServiceResponseObject>),
+    /// Bad request or service not resolved
+    #[oai(status = 400)]
+    BadRequest(XrpcError)
 }
 
 #[derive(Object)]
@@ -578,7 +616,7 @@ impl Xrpc {
         /// Handle or DID to resolve
         #[oai(example = "example_handle")]
         Query(identifier): Query<String>,
-    ) -> ResolveMiniIDResponse {
+    ) -> ResolveMiniDocResponse {
         self.resolve_mini_id(Query(identifier)).await
     }
 
@@ -596,13 +634,13 @@ impl Xrpc {
         /// Handle or DID to resolve
         #[oai(example = "example_handle")]
         Query(identifier): Query<String>,
-    ) -> ResolveMiniIDResponse {
+    ) -> ResolveMiniDocResponse {
         Self::resolve_mini_doc_impl(&identifier, self.identity.clone()).await
     }
 
-    async fn resolve_mini_doc_impl(identifier: &str, identity: Identity) -> ResolveMiniIDResponse {
+    async fn resolve_mini_doc_impl(identifier: &str, identity: Identity) -> ResolveMiniDocResponse {
         let invalid = |reason: &'static str| {
-            ResolveMiniIDResponse::BadRequest(xrpc_error("InvalidRequest", reason))
+            ResolveMiniDocResponse::BadRequest(xrpc_error("InvalidRequest", reason))
         };
 
         let mut unverified_handle = None;
@@ -667,11 +705,67 @@ impl Xrpc {
             }
         };
 
-        ResolveMiniIDResponse::Ok(Json(MiniDocResponseObject {
+        ResolveMiniDocResponse::Ok(Json(MiniDocResponseObject {
             did: did.to_string(),
             handle,
             pds: partial_doc.pds,
             signing_key: partial_doc.signing_key,
+        }))
+    }
+
+    /// com.bad-example.identity.resolveService
+    ///
+    /// resolve an atproto service did + id to its http endpoint
+    #[oai(
+        path = "/com.bad-example.identity.resolveService",
+        method = "get",
+        tag = "ApiTags::Custom"
+    )]
+    async fn resolve_service(
+        &self,
+        /// the service's did
+        #[oai(example = "example_service_did")]
+        Query(did): Query<String>,
+        /// id fragment, starting with '#'
+        ///
+        /// must be url-encoded!
+        #[oai(example = "example_id_fragment")]
+        Query(id): Query<String>,
+        /// optionally, the exact service type to filter
+        ///
+        /// resolving a pds requires matching the type as well as id. service
+        /// proxying ignores the type.
+        Query(r#type): Query<Option<String>>,
+    ) -> ResolveServiceResponse {
+        let Ok(did) = Did::new(did) else {
+            return ResolveServiceResponse::BadRequest(xrpc_error("InvalidRequest", "could not parse 'did' into a DID"));
+        };
+        let identity = self.identity.clone();
+        Self::resolve_service_impl(&did, &id, r#type.as_deref(), identity).await
+    }
+
+    async fn resolve_service_impl(
+        did: &Did,
+        id_fragment: &str,
+        service_type: Option<&str>,
+        identity: Identity
+    ) -> ResolveServiceResponse {
+        let invalid = |reason: &'static str| {
+            ResolveServiceResponse::BadRequest(xrpc_error("InvalidRequest", reason))
+        };
+        let Ok(service_mini_doc) = identity.did_to_mini_service_doc(&did).await else {
+            return invalid("Failed to get DID doc");
+        };
+        let Some(service_mini_doc) = service_mini_doc else {
+            return invalid("Failed to find DID doc");
+        };
+
+        let Some(matching) = service_mini_doc.get(id_fragment, service_type) else {
+            return invalid("failed to match identity (and maybe type)");
+        };
+
+        ResolveServiceResponse::Ok(Json(ServiceResponseObject {
+            endpoint: matching.endpoint.clone(),
         }))
     }
 
@@ -792,10 +886,10 @@ impl Xrpc {
                             let identity = self.identity.clone();
                             tokio::task::spawn(async move {
                                 let res = match Self::resolve_mini_doc_impl(&id, identity).await {
-                                    ResolveMiniIDResponse::Ok(Json(mini_doc)) => Hydration::Found(ProxyHydrationIdentifierFound {
+                                    ResolveMiniDocResponse::Ok(Json(mini_doc)) => Hydration::Found(ProxyHydrationIdentifierFound {
                                         mini_doc
                                     }),
-                                    ResolveMiniIDResponse::BadRequest(e) => {
+                                    ResolveMiniDocResponse::BadRequest(e) => {
                                         log::warn!("minidoc fail: {:?}", e.0);
                                         Hydration::Error(ProxyHydrationError {
                                             reason: "failed to resolve mini doc".to_string(),
