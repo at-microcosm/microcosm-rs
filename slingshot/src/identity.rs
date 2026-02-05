@@ -61,8 +61,8 @@ struct IdentityVal(UtcDateTime, IdentityData);
 #[derive(Debug, Serialize, Deserialize)]
 enum IdentityData {
     NotFound,
-    Did(Did), // from handle
-    Doc(PartialMiniDoc), // from did
+    Did(Did),                   // from handle
+    Doc(PartialMiniDoc),        // from did
     ServiceDoc(MiniServiceDoc), // from service did
 }
 
@@ -86,7 +86,7 @@ impl IdentityVal {
                     s += std::mem::size_of_val(&sv.endpoint);
                 }
                 s
-            },
+            }
         };
         wrapping + inner
     }
@@ -189,13 +189,10 @@ pub struct MiniServiceDoc {
 
 impl MiniServiceDoc {
     pub fn get(&self, id_fragment: &str, service_type: Option<&str>) -> Option<&MiniService> {
-        self.services
-            .iter()
-            .find(|MiniService { full_id, r#type, .. }|
-                full_id.ends_with(id_fragment)
-                    && service_type
-                        .map(|t| t == *r#type)
-                        .unwrap_or(true))
+        self.services.iter().find(|ms| {
+            ms.full_id.ends_with(id_fragment)
+                && service_type.map(|t| t == ms.r#type).unwrap_or(true)
+        })
     }
 }
 
@@ -217,7 +214,12 @@ impl TryFrom<DidDocument> for MiniServiceDoc {
         let mut services = Vec::new();
         let mut seen = HashSet::new();
 
-        for DidDocServic { id, r#type, service_endpoint } in did_doc.service.unwrap_or(vec![]) {
+        for DidDocServic {
+            id,
+            r#type,
+            service_endpoint,
+        } in did_doc.service.unwrap_or(vec![])
+        {
             let Some((_, id_fragment)) = id.rsplit_once('#') else {
                 continue;
             };
@@ -474,7 +476,10 @@ impl Identity {
                         ),
                         Ok(did_doc) => match did_doc.try_into() {
                             Ok(mini_service_doc) => (
-                                Ok(IdentityVal(UtcDateTime::now(), IdentityData::ServiceDoc(mini_service_doc))),
+                                Ok(IdentityVal(
+                                    UtcDateTime::now(),
+                                    IdentityData::ServiceDoc(mini_service_doc),
+                                )),
                                 "true",
                             ),
                             Err(e) => (Err(IdentityError::BadDidDoc(e)), "false"),
@@ -510,7 +515,9 @@ impl Identity {
                 Ok(Some(mini_service_doc.clone()))
             }
             _ => {
-                log::error!("identity value mixup: got a doc from a different key type (should be a service did)");
+                log::error!(
+                    "identity value mixup: got a doc from a different key type (should be a service did)"
+                );
                 Err(IdentityError::IdentityValTypeMixup(did.to_string()))
             }
         }
@@ -715,7 +722,10 @@ impl Identity {
                                 .increment(1);
                             self.cache.insert(
                                 task_key.clone(),
-                                IdentityVal(UtcDateTime::now(), IdentityData::ServiceDoc(mini_service_doc)),
+                                IdentityVal(
+                                    UtcDateTime::now(),
+                                    IdentityData::ServiceDoc(mini_service_doc),
+                                ),
                             );
                         }
                         Err(atrium_identity::Error::NotFound) => {
