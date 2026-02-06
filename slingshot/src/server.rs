@@ -866,7 +866,7 @@ impl Xrpc {
 
                 let t0 = Instant::now();
 
-                for link in links {
+                for (i, link) in links.into_iter().enumerate() {
                     match link {
                         MatchedRef::AtUri(parts) => {
                             let non_canonical_url = parts.to_uri();
@@ -886,13 +886,26 @@ impl Xrpc {
                                     .query_pairs_mut()
                                     .append_pair("cid", &cid.as_ref().to_string());
                             }
-                            records.insert(
-                                non_canonical_url.clone(),
-                                Hydration::Pending(ProxyHydrationPending {
-                                    reason: "deadline".to_string(),
-                                    follow_up: follow_up.to_string(),
-                                }),
-                            );
+
+                            if i >= 100 {
+                                records.insert(
+                                    non_canonical_url.clone(),
+                                    Hydration::Pending(ProxyHydrationPending {
+                                        reason: "limit".to_string(),
+                                        follow_up: follow_up.to_string(),
+                                    }),
+                                );
+                                continue;
+                            } else {
+                                records.insert(
+                                    non_canonical_url.clone(),
+                                    Hydration::Pending(ProxyHydrationPending {
+                                        reason: "deadline".to_string(),
+                                        follow_up: follow_up.to_string(),
+                                    }),
+                                );
+                            }
+
                             let tx = tx.clone();
                             let identity = self.identity.clone();
                             let repo = self.repo.clone();
@@ -1006,13 +1019,25 @@ impl Xrpc {
                                 .query_pairs_mut()
                                 .append_pair("identifier", &identifier);
 
-                            identifiers.insert(
-                                identifier.clone(),
-                                Hydration::Pending(ProxyHydrationPending {
-                                    reason: "deadline".to_string(),
-                                    follow_up: follow_up.to_string(),
-                                }),
-                            );
+                            if i >= 100 {
+                                identifiers.insert(
+                                    identifier.clone(),
+                                    Hydration::Pending(ProxyHydrationPending {
+                                        reason: "limit".to_string(),
+                                        follow_up: follow_up.to_string(),
+                                    }),
+                                );
+                                continue;
+                            } else {
+                                identifiers.insert(
+                                    identifier.clone(),
+                                    Hydration::Pending(ProxyHydrationPending {
+                                        reason: "deadline".to_string(),
+                                        follow_up: follow_up.to_string(),
+                                    }),
+                                );
+                            }
+
                             let tx = tx.clone();
                             let identity = self.identity.clone();
                             tokio::task::spawn(async move {
