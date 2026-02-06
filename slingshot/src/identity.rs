@@ -457,7 +457,7 @@ impl Identity {
         &self,
         did: &Did,
     ) -> Result<Option<MiniServiceDoc>, IdentityError> {
-        let key = IdentityKey::Did(did.clone());
+        let key = IdentityKey::ServiceDid(did.clone());
         metrics::counter!("slingshot_get_service_did_doc").increment(1);
         let entry = self
             .cache
@@ -659,6 +659,7 @@ impl Identity {
                                 log::warn!(
                                     "refreshed did doc failed: wrong did doc id. dropping refresh."
                                 );
+                                self.complete_refresh(&task_key).await?;
                                 continue;
                             }
                             let mini_doc = match did_doc.try_into() {
@@ -666,8 +667,9 @@ impl Identity {
                                 Err(e) => {
                                     metrics::counter!("identity_did_refresh", "success" => "false", "reason" => "bad doc").increment(1);
                                     log::warn!(
-                                        "converting mini doc failed: {e:?}. dropping refresh."
+                                        "converting mini doc for {did:?} failed: {e:?}. dropping refresh."
                                     );
+                                    self.complete_refresh(&task_key).await?;
                                     continue;
                                 }
                             };
@@ -706,6 +708,7 @@ impl Identity {
                                 log::warn!(
                                     "refreshed did doc failed: wrong did doc id. dropping refresh."
                                 );
+                                self.complete_refresh(&task_key).await?;
                                 continue;
                             }
                             let mini_service_doc = match did_doc.try_into() {
@@ -715,6 +718,7 @@ impl Identity {
                                     log::warn!(
                                         "converting mini service doc failed: {e:?}. dropping refresh."
                                     );
+                                    self.complete_refresh(&task_key).await?;
                                     continue;
                                 }
                             };

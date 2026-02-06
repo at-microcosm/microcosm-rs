@@ -1,10 +1,10 @@
 use crate::{
     CachedRecord, ErrorResponseObject, Identity, Proxy, Repo,
     error::{RecordError, ServerError},
-    proxy::{MatchedRef, extract_links},
+    proxy::{FullAtUriParts, MatchedRef, extract_links, split_uri},
     record::RawRecord,
 };
-use atrium_api::types::string::{Cid, Did, Handle, Nsid, RecordKey};
+use atrium_api::types::string::{AtIdentifier, Cid, Did, Handle, Nsid, RecordKey};
 use foyer::HybridCache;
 use links::at_uri::parse_at_uri as normalize_at_uri;
 use serde::Serialize;
@@ -236,23 +236,36 @@ enum ResolveServiceResponse {
 }
 
 #[derive(Object)]
+#[oai(rename_all = "camelCase")]
 struct ProxyHydrationError {
+    /// Short description of why the hydration failed
     reason: String,
+    /// Whether or not it's recommended to retry requesting this item
+    should_retry: bool,
+    /// URL to follow up at if retrying
+    follow_up: String,
 }
 
 #[derive(Object)]
+#[oai(rename_all = "camelCase")]
 struct ProxyHydrationPending {
-    url: String,
-}
-
-#[derive(Object)]
-struct ProxyHydrationRecordFound {
-    record: serde_json::Value,
-}
-
-#[derive(Object)]
-struct ProxyHydrationIdentifierFound {
-    mini_doc: MiniDocResponseObject,
+    /// URL you can request to finish hydrating this item
+    follow_up: String,
+    /// Why this item couldn't be hydrated: 'deadline' or 'limit'
+    ///
+    /// - `deadline`: the item fetch didn't complete before the response was
+    ///   due, but will continue on slingshot in the background -- `followUp`
+    ///   requests are coalesced into the original item fetch to be available as
+    ///   early as possible.
+    ///
+    /// - `limit`: slingshot only attempts to hydrate the first 100 items found
+    ///   in a proxied response, with the remaining marked `pending`. You can
+    ///   request `followUp` to fetch them.
+    ///
+    /// In the future, Slingshot may put pending links after `limit` into a low-
+    /// priority fetch queue, so that these items become available sooner on
+    /// follow-up request as well.
+    reason: String,
 }
 
 // todo: there's gotta be a supertrait that collects these?
@@ -272,9 +285,9 @@ struct ProxyHydrateResponseObject {
     /// The original upstream response content
     output: serde_json::Value,
     /// Any hydrated records
-    records: HashMap<String, Hydration<ProxyHydrationRecordFound>>,
+    records: HashMap<String, Hydration<FoundRecordResponseObject>>,
     /// Any hydrated identifiers
-    identifiers: HashMap<String, Hydration<ProxyHydrationIdentifierFound>>,
+    identifiers: HashMap<String, Hydration<MiniDocResponseObject>>,
 }
 impl Example for ProxyHydrateResponseObject {
     fn example() -> Self {
@@ -282,7 +295,10 @@ impl Example for ProxyHydrateResponseObject {
             output: serde_json::json!({}),
             records: HashMap::from([(
                 "asdf".into(),
-                Hydration::Pending(ProxyHydrationPending { url: "todo".into() }),
+                Hydration::Pending(ProxyHydrationPending {
+                    follow_up: "/xrpc/com.atproto.repo.getRecord?...".to_string(),
+                    reason: "deadline".to_string(),
+                }),
             )]),
             identifiers: HashMap::new(),
         }
@@ -334,7 +350,7 @@ struct ProxyQueryPayload {
     params: Option<serde_json::Value>,
     /// Paths within the response to look for at-uris that can be hydrated
     hydration_sources: Vec<HydrationSource>,
-    // todo: deadline thing
+    // todo: let clients pass a hydration deadline?
 }
 impl Example for ProxyQueryPayload {
     fn example() -> Self {
@@ -383,6 +399,7 @@ enum JustDidResponse {
 }
 
 struct Xrpc {
+    base_url: url::Url,
     cache: HybridCache<String, CachedRecord>,
     identity: Identity,
     proxy: Arc<Proxy>,
@@ -451,7 +468,8 @@ impl Xrpc {
         /// only retains the most recent version of a record.
         Query(cid): Query<Option<String>>,
     ) -> GetRecordResponse {
-        self.get_record_impl(repo, collection, rkey, cid).await
+        self.get_record_impl(&repo, &collection, &rkey, cid.as_deref())
+            .await
     }
 
     /// blue.microcosm.repo.getRecordByUri
@@ -521,27 +539,15 @@ impl Xrpc {
             return bad_at_uri();
         };
 
-        // TODO: move this to links
-        let Some(rest) = normalized.strip_prefix("at://") else {
+        let Some((repo, collection, rkey)) = split_uri(&normalized) else {
             return bad_at_uri();
-        };
-        let Some((repo, rest)) = rest.split_once('/') else {
-            return bad_at_uri();
-        };
-        let Some((collection, rest)) = rest.split_once('/') else {
-            return bad_at_uri();
-        };
-        let rkey = if let Some((rkey, _rest)) = rest.split_once('?') {
-            rkey
-        } else {
-            rest
         };
 
         self.get_record_impl(
-            repo.to_string(),
-            collection.to_string(),
-            rkey.to_string(),
-            cid,
+            Into::<String>::into(repo).as_str(),
+            collection.as_str(),
+            rkey.as_str(),
+            cid.as_deref(),
         )
         .await
     }
@@ -795,9 +801,6 @@ impl Xrpc {
         &self,
         Json(payload): Json<ProxyQueryPayload>,
     ) -> ProxyHydrateResponse {
-        // TODO: the Accept request header, if present, gotta be json
-        // TODO: find any Authorization header and verify it. TBD about `aud`.
-
         let params = if let Some(p) = payload.params {
             let serde_json::Value::Object(map) = p else {
                 panic!("params have to be an object");
@@ -855,8 +858,8 @@ impl Xrpc {
                 let mut identifiers = HashMap::new();
 
                 enum GetThing {
-                    Record(String, Hydration<ProxyHydrationRecordFound>),
-                    Identifier(String, Hydration<ProxyHydrationIdentifierFound>),
+                    Record(String, Hydration<FoundRecordResponseObject>),
+                    Identifier(String, Hydration<MiniDocResponseObject>),
                 }
 
                 let (tx, mut rx) = mpsc::channel(1);
@@ -865,73 +868,125 @@ impl Xrpc {
 
                 for link in links {
                     match link {
-                        MatchedRef::AtUri { uri, cid } => {
-                            if records.contains_key(&uri) {
+                        MatchedRef::AtUri(parts) => {
+                            let non_canonical_url = parts.to_uri();
+                            if records.contains_key(&non_canonical_url) {
                                 log::warn!("skipping duplicate record without checking cid");
                                 continue;
                             }
-                            let mut u = url::Url::parse("https://example.com").unwrap();
-                            u.query_pairs_mut().append_pair("at_uri", &uri); // BLEH todo
+                            let mut follow_up = self.base_url.clone();
+                            follow_up.set_path("/xrpc/com.atproto.repo.getRecord");
+                            follow_up
+                                .query_pairs_mut()
+                                .append_pair("repo", &Into::<String>::into(parts.repo.clone()))
+                                .append_pair("collection", parts.collection.as_str())
+                                .append_pair("rkey", parts.rkey.as_str());
+                            if let Some(ref cid) = parts.cid {
+                                follow_up
+                                    .query_pairs_mut()
+                                    .append_pair("cid", &cid.as_ref().to_string());
+                            }
                             records.insert(
-                                uri.clone(),
+                                non_canonical_url.clone(),
                                 Hydration::Pending(ProxyHydrationPending {
-                                    url: format!(
-                                        "/xrpc/blue.microcosm.repo.getRecordByUri?{}",
-                                        u.query().unwrap()
-                                    ), // TODO better; with cid, etc.
+                                    reason: "deadline".to_string(),
+                                    follow_up: follow_up.to_string(),
                                 }),
                             );
                             let tx = tx.clone();
                             let identity = self.identity.clone();
                             let repo = self.repo.clone();
                             tokio::task::spawn(async move {
-                                let rest = uri.strip_prefix("at://").unwrap();
-                                let (identifier, rest) = rest.split_once('/').unwrap();
-                                let (collection, rkey) = rest.split_once('/').unwrap();
-
-                                let did = if identifier.starts_with("did:") {
-                                    Did::new(identifier.to_string()).unwrap()
-                                } else {
-                                    let handle = Handle::new(identifier.to_string()).unwrap();
-                                    identity.handle_to_did(handle).await.unwrap().unwrap()
+                                let FullAtUriParts {
+                                    repo: ident,
+                                    collection,
+                                    rkey,
+                                    cid,
+                                } = parts;
+                                let did = match ident {
+                                    AtIdentifier::Did(did) => did,
+                                    AtIdentifier::Handle(handle) => {
+                                        let Ok(Some(did)) = identity.handle_to_did(handle).await
+                                        else {
+                                            let res = Hydration::Error(ProxyHydrationError {
+                                                reason: "could not resolve handle".to_string(),
+                                                should_retry: true,
+                                                follow_up: follow_up.to_string(),
+                                            });
+                                            return if tx
+                                                .send(GetThing::Record(non_canonical_url, res))
+                                                .await
+                                                .is_ok()
+                                            {
+                                                metrics::counter!("slingshot_hydrated_one", "type" => "record", "ontime" => "true").increment(1);
+                                            } else {
+                                                metrics::counter!("slingshot_hydrated_one", "type" => "record", "ontime" => "false").increment(1);
+                                            };
+                                        };
+                                        did
+                                    }
                                 };
 
-                                let res = match repo
-                                    .get_record(
-                                        &did,
-                                        &Nsid::new(collection.to_string()).unwrap(),
-                                        &RecordKey::new(rkey.to_string()).unwrap(),
-                                        &cid.as_ref().map(|s| Cid::from_str(s).unwrap()),
-                                    )
-                                    .await
-                                {
-                                    Ok(CachedRecord::Deleted) => {
-                                        Hydration::Error(ProxyHydrationError {
-                                            reason: "record deleted".to_string(),
-                                        })
-                                    }
-                                    Ok(CachedRecord::Found(RawRecord {
-                                        cid: found_cid,
-                                        record,
-                                    })) => {
-                                        if let Some(c) = cid
-                                            && found_cid.as_ref().to_string() != c
-                                        {
-                                            log::warn!("ignoring cid mismatch");
+                                let res =
+                                    match repo.get_record(&did, &collection, &rkey, &cid).await {
+                                        Ok(CachedRecord::Deleted) => {
+                                            Hydration::Error(ProxyHydrationError {
+                                                reason: "record deleted".to_string(),
+                                                should_retry: false,
+                                                follow_up: follow_up.to_string(),
+                                            })
                                         }
-                                        let value = serde_json::from_str(&record).unwrap();
-                                        Hydration::Found(ProxyHydrationRecordFound {
-                                            record: value,
-                                        })
-                                    }
-                                    Err(e) => {
-                                        log::warn!("finally oop {e:?}");
-                                        Hydration::Error(ProxyHydrationError {
-                                            reason: "failed to fetch record".to_string(),
-                                        })
-                                    }
-                                };
-                                if tx.send(GetThing::Record(uri, res)).await.is_ok() {
+                                        Ok(CachedRecord::Found(RawRecord {
+                                            cid: found_cid,
+                                            record,
+                                        })) => {
+                                            if cid
+                                                .as_ref()
+                                                .map(|expected| *expected != found_cid)
+                                                .unwrap_or(false)
+                                            {
+                                                Hydration::Error(ProxyHydrationError {
+                                                    reason: "not found".to_string(),
+                                                    should_retry: false,
+                                                    follow_up: follow_up.to_string(),
+                                                })
+                                            } else if let Ok(value) = serde_json::from_str(&record)
+                                            {
+                                                let canonical_uri = FullAtUriParts {
+                                                    repo: AtIdentifier::Did(did),
+                                                    collection,
+                                                    rkey,
+                                                    cid: None, // not used for .to_uri
+                                                }
+                                                .to_uri();
+                                                Hydration::Found(FoundRecordResponseObject {
+                                                    cid: Some(found_cid.as_ref().to_string()),
+                                                    uri: canonical_uri,
+                                                    value,
+                                                })
+                                            } else {
+                                                Hydration::Error(ProxyHydrationError {
+                                                    reason: "could not parse upstream response"
+                                                        .to_string(),
+                                                    should_retry: false,
+                                                    follow_up: follow_up.to_string(),
+                                                })
+                                            }
+                                        }
+                                        Err(e) => {
+                                            log::warn!("finally oop {e:?}");
+                                            Hydration::Error(ProxyHydrationError {
+                                                reason: "failed to fetch record".to_string(),
+                                                should_retry: true, // TODO
+                                                follow_up: follow_up.to_string(),
+                                            })
+                                        }
+                                    };
+                                if tx
+                                    .send(GetThing::Record(non_canonical_url, res))
+                                    .await
+                                    .is_ok()
+                                {
                                     metrics::counter!("slingshot_hydrated_one", "type" => "record", "ontime" => "true").increment(1);
                                 } else {
                                     metrics::counter!("slingshot_hydrated_one", "type" => "record", "ontime" => "false").increment(1);
@@ -939,35 +994,44 @@ impl Xrpc {
                             });
                         }
                         MatchedRef::Identifier(id) => {
-                            if identifiers.contains_key(&id) {
+                            let identifier: String = id.clone().into();
+                            if identifiers.contains_key(&identifier) {
                                 continue;
                             }
-                            let mut u = url::Url::parse("https://example.com").unwrap();
-                            u.query_pairs_mut().append_pair("identifier", &id);
+
+                            let mut follow_up = self.base_url.clone();
+                            follow_up.set_path("/xrpc/blue.microcosm.identity.resolveMiniDoc");
+
+                            follow_up
+                                .query_pairs_mut()
+                                .append_pair("identifier", &identifier);
+
                             identifiers.insert(
-                                id.clone(),
+                                identifier.clone(),
                                 Hydration::Pending(ProxyHydrationPending {
-                                    url: format!(
-                                        "/xrpc/blue.microcosm.identity.resolveMiniDoc?{}",
-                                        u.query().unwrap()
-                                    ), // gross
+                                    reason: "deadline".to_string(),
+                                    follow_up: follow_up.to_string(),
                                 }),
                             );
                             let tx = tx.clone();
                             let identity = self.identity.clone();
                             tokio::task::spawn(async move {
-                                let res = match Self::resolve_mini_doc_impl(&id, identity).await {
+                                let res = match Self::resolve_mini_doc_impl(&identifier, identity)
+                                    .await
+                                {
                                     ResolveMiniDocResponse::Ok(Json(mini_doc)) => {
-                                        Hydration::Found(ProxyHydrationIdentifierFound { mini_doc })
+                                        Hydration::Found(mini_doc)
                                     }
                                     ResolveMiniDocResponse::BadRequest(e) => {
                                         log::warn!("minidoc fail: {:?}", e.0);
                                         Hydration::Error(ProxyHydrationError {
                                             reason: "failed to resolve mini doc".to_string(),
+                                            should_retry: false,
+                                            follow_up: follow_up.to_string(),
                                         })
                                     }
                                 };
-                                if tx.send(GetThing::Identifier(id, res)).await.is_ok() {
+                                if tx.send(GetThing::Identifier(identifier, res)).await.is_ok() {
                                     metrics::counter!("slingshot_hydrated_one", "type" => "identity", "ontime" => "true").increment(1);
                                 } else {
                                     metrics::counter!("slingshot_hydrated_one", "type" => "identity", "ontime" => "false").increment(1);
@@ -985,10 +1049,18 @@ impl Xrpc {
                     while let Some(hydration) = rx.recv().await {
                         match hydration {
                             GetThing::Record(uri, h) => {
-                                records.insert(uri, h);
+                                if let Some(r) = records.get_mut(&uri) {
+                                    match (&r, &h) {
+                                        (_, Hydration::Found(_)) => *r = h,   // always replace if found
+                                        (Hydration::Pending(_), _) => *r = h, // or if it was pending
+                                        _ => {}                               // else leave it
+                                    }
+                                } else {
+                                    records.insert(uri, h);
+                                }
                             }
-                            GetThing::Identifier(uri, md) => {
-                                identifiers.insert(uri, md);
+                            GetThing::Identifier(identifier, md) => {
+                                identifiers.insert(identifier.to_string(), md);
                             }
                         };
                     }
@@ -1016,12 +1088,12 @@ impl Xrpc {
 
     async fn get_record_impl(
         &self,
-        repo: String,
-        collection: String,
-        rkey: String,
-        cid: Option<String>,
+        repo: &str,
+        collection: &str,
+        rkey: &str,
+        cid: Option<&str>,
     ) -> GetRecordResponse {
-        let did = match Did::new(repo.clone()) {
+        let did = match Did::new(repo.to_string()) {
             Ok(did) => did,
             Err(_) => {
                 let Ok(handle) = Handle::new(repo.to_lowercase()) else {
@@ -1052,19 +1124,19 @@ impl Xrpc {
             }
         };
 
-        let Ok(collection) = Nsid::new(collection) else {
+        let Ok(collection) = Nsid::new(collection.to_string()) else {
             return GetRecordResponse::BadRequest(xrpc_error(
                 "InvalidRequest",
                 "Invalid NSID for collection",
             ));
         };
 
-        let Ok(rkey) = RecordKey::new(rkey) else {
+        let Ok(rkey) = RecordKey::new(rkey.to_string()) else {
             return GetRecordResponse::BadRequest(xrpc_error("InvalidRequest", "Invalid rkey"));
         };
 
         let cid: Option<Cid> = if let Some(cid) = cid {
-            let Ok(cid) = Cid::from_str(&cid) else {
+            let Ok(cid) = Cid::from_str(cid) else {
                 return GetRecordResponse::BadRequest(xrpc_error("InvalidRequest", "Invalid CID"));
             };
             Some(cid)
@@ -1213,6 +1285,7 @@ pub async fn serve(
     identity: Identity,
     repo: Repo,
     proxy: Proxy,
+    base_url: url::Url,
     acme_domain: Option<String>,
     acme_contact: Option<String>,
     acme_cache_path: Option<PathBuf>,
@@ -1224,6 +1297,7 @@ pub async fn serve(
     let proxy = Arc::new(proxy);
     let api_service = OpenApiService::new(
         Xrpc {
+            base_url,
             cache,
             identity,
             proxy,

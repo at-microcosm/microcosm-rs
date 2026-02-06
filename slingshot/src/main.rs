@@ -1,5 +1,3 @@
-// use foyer::HybridCache;
-// use foyer::{Engine, DirectFsDeviceOptions, HybridCacheBuilder};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use slingshot::{
     Identity, Proxy, Repo, consume, error::MainTaskError, firehose_cache, healthcheck, serve,
@@ -9,6 +7,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
+use url::Url;
 
 /// Slingshot record edge cache
 #[derive(Parser, Debug, Clone)]
@@ -48,6 +47,11 @@ struct Args {
     #[arg(long, env = "SLINGSHOT_IDENTITY_CACHE_DISK_DB")]
     #[clap(default_value_t = 1)]
     identity_cache_disk_gb: usize,
+    /// the address of this server
+    ///
+    /// used if --acme-domain is not set, defaulting to `--bind`
+    #[arg(long, conflicts_with("acme_domain"), env = "SLINGSHOT_PUBLIC_HOST")]
+    base_url: Option<Url>,
     /// the domain pointing to this server
     ///
     /// if present:
@@ -100,6 +104,15 @@ async fn main() -> Result<(), String> {
     ctrlc::set_handler(move || ctrlc_shutdown.cancel()).expect("failed to set ctrl-c handler");
 
     let args = Args::parse();
+
+    let base_url: Url = args
+        .base_url
+        .or_else(|| {
+            args.acme_domain
+                .as_ref()
+                .map(|d| Url::parse(&format!("https://{d}")).unwrap())
+        })
+        .unwrap_or_else(|| Url::parse(&format!("http://{}", args.bind)).unwrap());
 
     if args.collect_metrics {
         log::trace!("installing metrics server...");
@@ -164,6 +177,7 @@ async fn main() -> Result<(), String> {
             identity_for_server,
             repo,
             proxy,
+            base_url,
             args.acme_domain,
             args.acme_contact,
             args.acme_cache_path,
@@ -236,9 +250,9 @@ fn install_metrics_server(
 ) -> Result<(), metrics_exporter_prometheus::BuildError> {
     log::info!("installing metrics server...");
     PrometheusBuilder::new()
-        .set_quantiles(&[0.5, 0.9, 0.99, 1.0])?
-        .set_bucket_duration(std::time::Duration::from_secs(300))?
-        .set_bucket_count(std::num::NonZero::new(12).unwrap()) // count * duration = 60 mins. stuff doesn't happen that fast here.
+        .set_buckets(&[0.001, 0.006, 0.036, 0.216, 1.296, 7.776, 45.656])?
+        .set_bucket_duration(std::time::Duration::from_secs(15))?
+        .set_bucket_count(std::num::NonZero::new(4).unwrap()) // count * duration = bucket lifetime
         .set_enable_unit_suffix(false) // this seemed buggy for constellation (sometimes wouldn't engage)
         .with_http_listener(bind_metrics)
         .install()?;

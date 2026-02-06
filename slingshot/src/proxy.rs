@@ -1,5 +1,5 @@
 use crate::{Identity, error::ProxyError, server::HydrationSource};
-use atrium_api::types::string::{Did, Nsid};
+use atrium_api::types::string::{AtIdentifier, Cid, Did, Nsid, RecordKey};
 use reqwest::Client;
 use serde_json::{Map, Value};
 use std::{collections::HashMap, time::Duration};
@@ -135,6 +135,7 @@ impl Proxy {
 
         // TODO i mean maybe we should look for headers also in our headers but not obviously
         let mut headers = reqwest::header::HeaderMap::new();
+        // TODO: check the jwt aud against the upstream!!!
         if let Some(auth) = authorization {
             headers.insert("Authorization", auth.try_into()?);
         }
@@ -252,9 +253,39 @@ impl TryFrom<&str> for RefShape {
 }
 
 #[derive(Debug, PartialEq)]
+pub struct FullAtUriParts {
+    pub repo: AtIdentifier,
+    pub collection: Nsid,
+    pub rkey: RecordKey,
+    pub cid: Option<Cid>,
+}
+
+impl FullAtUriParts {
+    pub fn to_uri(&self) -> String {
+        let repo: String = self.repo.clone().into(); // no as_str for AtIdentifier atrium???
+        let collection = self.collection.as_str();
+        let rkey = self.rkey.as_str();
+        format!("at://{repo}/{collection}/{rkey}")
+    }
+}
+
+// TODO: move this to links
+pub fn split_uri(uri: &str) -> Option<(AtIdentifier, Nsid, RecordKey)> {
+    let rest = uri.strip_prefix("at://")?;
+    let (repo, rest) = rest.split_once("/")?;
+    let repo = repo.parse().ok()?;
+    let (collection, rkey) = rest.split_once("/")?;
+    let collection = collection.parse().ok()?;
+    let rkey = rkey.split_once('#').map(|(k, _)| k).unwrap_or(rkey);
+    let rkey = rkey.split_once('?').map(|(k, _)| k).unwrap_or(rkey);
+    let rkey = rkey.parse().ok()?;
+    Some((repo, collection, rkey))
+}
+
+#[derive(Debug, PartialEq)]
 pub enum MatchedRef {
-    AtUri { uri: String, cid: Option<String> },
-    Identifier(String),
+    AtUri(FullAtUriParts),
+    Identifier(AtIdentifier),
 }
 
 pub fn match_shape(shape: RefShape, val: &Value) -> Option<MatchedRef> {
@@ -266,40 +297,53 @@ pub fn match_shape(shape: RefShape, val: &Value) -> Option<MatchedRef> {
         RefShape::StrongRef => {
             let o = val.as_object()?;
             let uri = o.get("uri")?.as_str()?.to_string();
-            let cid = o.get("cid")?.as_str()?.to_string();
-            Some(MatchedRef::AtUri {
-                uri,
+            let cid = o.get("cid")?.as_str()?.parse().ok()?;
+            let (repo, collection, rkey) = split_uri(&uri)?;
+            Some(MatchedRef::AtUri(FullAtUriParts {
+                repo,
+                collection,
+                rkey,
                 cid: Some(cid),
-            })
+            }))
         }
         RefShape::AtUri => {
             let uri = val.as_str()?.to_string();
-            Some(MatchedRef::AtUri { uri, cid: None })
+            let (repo, collection, rkey) = split_uri(&uri)?;
+            Some(MatchedRef::AtUri(FullAtUriParts {
+                repo,
+                collection,
+                rkey,
+                cid: None,
+            }))
         }
         RefShape::AtUriParts => {
             let o = val.as_object()?;
-            let identifier = o.get("repo").or(o.get("did"))?.as_str()?.to_string();
-            let collection = o.get("collection")?.as_str()?.to_string();
-            let rkey = o.get("rkey")?.as_str()?.to_string();
-            let uri = format!("at://{identifier}/{collection}/{rkey}");
-            let cid = o.get("cid").and_then(|v| v.as_str()).map(str::to_string);
-            Some(MatchedRef::AtUri { uri, cid })
+            let repo = o.get("repo").or(o.get("did"))?.as_str()?.parse().ok()?;
+            let collection = o.get("collection")?.as_str()?.parse().ok()?;
+            let rkey = o.get("rkey")?.as_str()?.parse().ok()?;
+            let cid = o
+                .get("cid")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok());
+            Some(MatchedRef::AtUri(FullAtUriParts {
+                repo,
+                collection,
+                rkey,
+                cid,
+            }))
         }
         RefShape::Did => {
-            let id = val.as_str()?;
-            if !id.starts_with("did:") {
-                return None;
-            }
-            Some(MatchedRef::Identifier(id.to_string()))
+            let did = val.as_str()?.parse().ok()?;
+            Some(MatchedRef::Identifier(AtIdentifier::Did(did)))
         }
         RefShape::Handle => {
-            let id = val.as_str()?;
-            if id.contains(':') {
-                return None;
-            }
-            Some(MatchedRef::Identifier(id.to_string()))
+            let handle = val.as_str()?.parse().ok()?;
+            Some(MatchedRef::Identifier(AtIdentifier::Handle(handle)))
         }
-        RefShape::AtIdentifier => Some(MatchedRef::Identifier(val.as_str()?.to_string())),
+        RefShape::AtIdentifier => {
+            let identifier = val.as_str()?.parse().ok()?;
+            Some(MatchedRef::Identifier(identifier))
+        }
     }
 }
 
@@ -386,6 +430,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    static TEST_CID: &str = "bafyreidffwk5wvh5l76yy7zefiqrovv6yaaegb4wg4zaq35w7nt3quix5a";
+
     #[test]
     fn test_parse_record_path() -> Result<(), Box<dyn std::error::Error>> {
         let cases = [
@@ -439,67 +485,85 @@ mod tests {
             ("strong-ref", json!(""), None),
             ("strong-ref", json!({}), None),
             ("strong-ref", json!({ "uri": "abc" }), None),
-            ("strong-ref", json!({ "cid": "def" }), None),
+            ("strong-ref", json!({ "cid": TEST_CID }), None),
             (
                 "strong-ref",
-                json!({ "uri": "abc", "cid": "def" }),
-                Some(MatchedRef::AtUri {
-                    uri: "abc".to_string(),
-                    cid: Some("def".to_string()),
-                }),
+                json!({ "uri": "at://a.com/xx.yy.zz/1", "cid": TEST_CID }),
+                Some(MatchedRef::AtUri(FullAtUriParts {
+                    repo: "a.com".parse().unwrap(),
+                    collection: "xx.yy.zz".parse().unwrap(),
+                    rkey: "1".parse().unwrap(),
+                    cid: Some(TEST_CID.parse().unwrap()),
+                })),
             ),
             ("at-uri", json!({ "uri": "abc" }), None),
-            ("at-uri", json!({ "uri": "abc", "cid": "def" }), None),
             (
                 "at-uri",
-                json!("abc"),
-                Some(MatchedRef::AtUri {
-                    uri: "abc".to_string(),
+                json!({ "uri": "at://did:web:y.com/xx.yy.zz/1", "cid": TEST_CID }),
+                None,
+            ),
+            (
+                "at-uri",
+                json!("at://did:web:y.com/xx.yy.zz/1"),
+                Some(MatchedRef::AtUri(FullAtUriParts {
+                    repo: "did:web:y.com".parse().unwrap(),
+                    collection: "xx.yy.zz".parse().unwrap(),
+                    rkey: "1".parse().unwrap(),
                     cid: None,
-                }),
+                })),
             ),
             ("at-uri-parts", json!("abc"), None),
             ("at-uri-parts", json!({}), None),
             (
                 "at-uri-parts",
-                json!({"repo": "a", "collection": "b", "rkey": "c"}),
-                Some(MatchedRef::AtUri {
-                    uri: "at://a/b/c".to_string(),
-                    cid: None,
-                }),
+                json!({"repo": "a.com", "collection": "xx.yy.zz", "rkey": "1", "cid": TEST_CID}),
+                Some(MatchedRef::AtUri(FullAtUriParts {
+                    repo: "a.com".parse().unwrap(),
+                    collection: "xx.yy.zz".parse().unwrap(),
+                    rkey: "1".parse().unwrap(),
+                    cid: Some(TEST_CID.parse().unwrap()),
+                })),
             ),
             (
                 "at-uri-parts",
-                json!({"did": "a", "collection": "b", "rkey": "c"}),
-                Some(MatchedRef::AtUri {
-                    uri: "at://a/b/c".to_string(),
+                json!({"did": "a.com", "collection": "xx.yy.zz", "rkey": "1"}),
+                Some(MatchedRef::AtUri(FullAtUriParts {
+                    repo: "a.com".parse().unwrap(),
+                    collection: "xx.yy.zz".parse().unwrap(),
+                    rkey: "1".parse().unwrap(),
                     cid: None,
-                }),
+                })),
             ),
             (
                 "at-uri-parts",
                 // 'repo' takes precedence over 'did'
-                json!({"did": "a", "repo": "z", "collection": "b", "rkey": "c"}),
-                Some(MatchedRef::AtUri {
-                    uri: "at://z/b/c".to_string(),
+                json!({"did": "did:web:a.com", "repo": "z.com", "collection": "xx.yy.zz", "rkey": "1"}),
+                Some(MatchedRef::AtUri(FullAtUriParts {
+                    repo: "z.com".parse().unwrap(),
+                    collection: "xx.yy.zz".parse().unwrap(),
+                    rkey: "1".parse().unwrap(),
                     cid: None,
-                }),
+                })),
             ),
             (
                 "at-uri-parts",
-                json!({"repo": "a", "collection": "b", "rkey": "c", "cid": "def"}),
-                Some(MatchedRef::AtUri {
-                    uri: "at://a/b/c".to_string(),
-                    cid: Some("def".to_string()),
-                }),
+                json!({"repo": "a.com", "collection": "xx.yy.zz", "rkey": "1", "cid": TEST_CID}),
+                Some(MatchedRef::AtUri(FullAtUriParts {
+                    repo: "a.com".parse().unwrap(),
+                    collection: "xx.yy.zz".parse().unwrap(),
+                    rkey: "1".parse().unwrap(),
+                    cid: Some(TEST_CID.parse().unwrap()),
+                })),
             ),
             (
                 "at-uri-parts",
-                json!({"repo": "a", "collection": "b", "rkey": "c", "cid": {}}),
-                Some(MatchedRef::AtUri {
-                    uri: "at://a/b/c".to_string(),
+                json!({"repo": "a.com", "collection": "xx.yy.zz", "rkey": "1", "cid": {}}),
+                Some(MatchedRef::AtUri(FullAtUriParts {
+                    repo: "a.com".parse().unwrap(),
+                    collection: "xx.yy.zz".parse().unwrap(),
+                    rkey: "1".parse().unwrap(),
                     cid: None,
-                }),
+                })),
             ),
             ("did", json!({}), None),
             ("did", json!(""), None),
@@ -507,31 +571,31 @@ mod tests {
             (
                 "did",
                 json!("did:plc:xyz"),
-                Some(MatchedRef::Identifier("did:plc:xyz".to_string())),
+                Some(MatchedRef::Identifier("did:plc:xyz".parse().unwrap())),
             ),
             ("handle", json!({}), None),
             (
                 "handle",
                 json!("bad-example.com"),
-                Some(MatchedRef::Identifier("bad-example.com".to_string())),
+                Some(MatchedRef::Identifier("bad-example.com".parse().unwrap())),
             ),
             ("handle", json!("did:plc:xyz"), None),
             ("at-identifier", json!({}), None),
             (
                 "at-identifier",
                 json!("bad-example.com"),
-                Some(MatchedRef::Identifier("bad-example.com".to_string())),
+                Some(MatchedRef::Identifier("bad-example.com".parse().unwrap())),
             ),
             (
                 "at-identifier",
                 json!("did:plc:xyz"),
-                Some(MatchedRef::Identifier("did:plc:xyz".to_string())),
+                Some(MatchedRef::Identifier("did:plc:xyz".parse().unwrap())),
             ),
         ];
-        for (shape, val, expected) in cases {
+        for (i, (shape, val, expected)) in cases.into_iter().enumerate() {
             let s = shape.try_into().unwrap();
             let matched = match_shape(s, &val);
-            assert_eq!(matched, expected, "shape: {shape:?}, val: {val:?}");
+            assert_eq!(matched, expected, "{i}: shape: {shape:?}, val: {val:?}");
         }
     }
 }
