@@ -320,6 +320,12 @@ struct ProxyQueryPayload {
     xrpc: String,
     /// The destination service the request will be forwarded to
     atproto_proxy: String,
+    /// An optional auth token to pass on
+    ///
+    /// the `aud` field must match the upstream atproto_proxy service
+    authorization: Option<String>,
+    /// An optional set of labelers to request be applied by the upstream
+    atproto_accept_labelers: Option<String>,
     /// The `params` for the destination service XRPC endpoint
     ///
     /// Currently this will be passed along unchecked, but a future version of
@@ -335,6 +341,8 @@ impl Example for ProxyQueryPayload {
         Self {
             xrpc: "app.bsky.feed.getFeedSkeleton".to_string(),
             atproto_proxy: "did:web:blue.mackuba.eu#bsky_fg".to_string(),
+            authorization: None,
+            atproto_accept_labelers: None,
             params: Some(serde_json::json!({
                 "feed": "at://did:plc:oio4hkxaop4ao4wz2pp3f4cr/app.bsky.feed.generator/atproto",
             })),
@@ -822,7 +830,14 @@ impl Xrpc {
 
         match self
             .proxy
-            .proxy(&service_did, &format!("#{id_fragment}"), &xrpc, params)
+            .proxy(
+                &service_did,
+                &format!("#{id_fragment}"),
+                &xrpc,
+                payload.authorization.as_deref(),
+                payload.atproto_accept_labelers.as_deref(),
+                params,
+            )
             .await
         {
             Ok(skeleton) => {
@@ -845,6 +860,8 @@ impl Xrpc {
                 }
 
                 let (tx, mut rx) = mpsc::channel(1);
+
+                let t0 = Instant::now();
 
                 for link in links {
                     match link {
@@ -914,7 +931,11 @@ impl Xrpc {
                                         })
                                     }
                                 };
-                                tx.send(GetThing::Record(uri, res)).await
+                                if tx.send(GetThing::Record(uri, res)).await.is_ok() {
+                                    metrics::counter!("slingshot_hydrated_one", "type" => "record", "ontime" => "true").increment(1);
+                                } else {
+                                    metrics::counter!("slingshot_hydrated_one", "type" => "record", "ontime" => "false").increment(1);
+                                }
                             });
                         }
                         MatchedRef::Identifier(id) => {
@@ -946,7 +967,11 @@ impl Xrpc {
                                         })
                                     }
                                 };
-                                tx.send(GetThing::Identifier(id, res)).await
+                                if tx.send(GetThing::Identifier(id, res)).await.is_ok() {
+                                    metrics::counter!("slingshot_hydrated_one", "type" => "identity", "ontime" => "true").increment(1);
+                                } else {
+                                    metrics::counter!("slingshot_hydrated_one", "type" => "identity", "ontime" => "false").increment(1);
+                                }
                             });
                         }
                     }
@@ -955,15 +980,25 @@ impl Xrpc {
                 // (we shoudl be doing a timeout...)
                 drop(tx);
 
-                while let Some(hydration) = rx.recv().await {
-                    match hydration {
-                        GetThing::Record(uri, h) => {
-                            records.insert(uri, h);
-                        }
-                        GetThing::Identifier(uri, md) => {
-                            identifiers.insert(uri, md);
-                        }
-                    };
+                let deadline = t0 + std::time::Duration::from_secs_f64(1.6);
+                let res = tokio::time::timeout_at(deadline.into(), async {
+                    while let Some(hydration) = rx.recv().await {
+                        match hydration {
+                            GetThing::Record(uri, h) => {
+                                records.insert(uri, h);
+                            }
+                            GetThing::Identifier(uri, md) => {
+                                identifiers.insert(uri, md);
+                            }
+                        };
+                    }
+                })
+                .await;
+
+                if res.is_ok() {
+                    metrics::histogram!("slingshot_hydration_all_completed").record(t0.elapsed());
+                } else {
+                    metrics::counter!("slingshot_hydration_cut_off").increment(1);
                 }
 
                 ProxyHydrateResponse::Ok(Json(ProxyHydrateResponseObject {

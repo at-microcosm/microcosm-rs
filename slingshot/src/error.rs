@@ -101,6 +101,8 @@ pub enum ProxyError {
     #[error(transparent)]
     ReqwestError(#[from] reqwest::Error),
     #[error(transparent)]
+    InvalidHeader(#[from] reqwest::header::InvalidHeaderValue),
+    #[error(transparent)]
     IdentityError(#[from] IdentityError),
     #[error("upstream service could not be resolved")]
     ServiceNotFound,

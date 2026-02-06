@@ -1,4 +1,4 @@
-use crate::{Identity, Repo, error::ProxyError, server::HydrationSource};
+use crate::{Identity, error::ProxyError, server::HydrationSource};
 use atrium_api::types::string::{Did, Nsid};
 use reqwest::Client;
 use serde_json::{Map, Value};
@@ -70,13 +70,12 @@ impl TryFrom<Map<String, Value>> for Params {
 
 #[derive(Clone)]
 pub struct Proxy {
-    repo: Repo,
     identity: Identity,
     client: Client,
 }
 
 impl Proxy {
-    pub fn new(repo: Repo, identity: Identity) -> Self {
+    pub fn new(identity: Identity) -> Self {
         let client = Client::builder()
             .user_agent(format!(
                 "microcosm slingshot v{} (contact: @bad-example.com)",
@@ -86,11 +85,7 @@ impl Proxy {
             .timeout(Duration::from_secs(6))
             .build()
             .unwrap();
-        Self {
-            repo,
-            client,
-            identity,
-        }
+        Self { client, identity }
     }
 
     pub async fn proxy(
@@ -98,6 +93,8 @@ impl Proxy {
         service_did: &Did,
         service_id: &str,
         xrpc: &Nsid,
+        authorization: Option<&str>,
+        atproto_accept_labelers: Option<&str>,
         params: Option<Map<String, Value>>,
     ) -> Result<Value, ProxyError> {
         let mut upstream: Url = self
@@ -136,15 +133,33 @@ impl Proxy {
             }
         }
 
-        // TODO: other headers to proxy
-        Ok(self
+        // TODO i mean maybe we should look for headers also in our headers but not obviously
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Some(auth) = authorization {
+            headers.insert("Authorization", auth.try_into()?);
+        }
+        if let Some(aal) = atproto_accept_labelers {
+            headers.insert("atproto-accept-labelers", aal.try_into()?);
+        }
+
+        let t0 = std::time::Instant::now();
+        let res = self
             .client
             .get(upstream)
+            .headers(headers)
             .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?)
+            .await
+            .and_then(|r| r.error_for_status());
+
+        if res.is_ok() {
+            metrics::histogram!("slingshot_proxy_upstream_request", "success" => "true")
+                .record(t0.elapsed());
+        } else {
+            metrics::histogram!("slingshot_proxy_upstream_request", "success" => "false")
+                .record(t0.elapsed());
+        }
+
+        Ok(res?.json().await?)
     }
 }
 
