@@ -1,4 +1,4 @@
-use crate::{ActionableEvent, CountsByCount, Did, RecordId, RecordsBySubject};
+use crate::{ActionableEvent, CountsByCount, Did, RecordId};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -145,7 +145,7 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
         after: Option<String>,
         filter_dids: &HashSet<Did>,
         filter_to_targets: &HashSet<String>,
-    ) -> Result<PagedOrderedCollection<RecordsBySubject, String>>;
+    ) -> Result<PagedOrderedCollection<(RecordId, String), String>>;
 
     fn get_all_counts(
         &self,
@@ -1740,20 +1740,20 @@ mod tests {
                 &HashSet::new(),
             )?,
             PagedOrderedCollection {
-                items: vec![RecordsBySubject {
-                    subject: "b.com".to_string(),
-                    records: vec![RecordId {
+                items: vec![(
+                    RecordId {
                         did: "did:plc:asdf".into(),
                         collection: "app.t.c".into(),
                         rkey: "asdf".into(),
-                    }]
-                }],
+                    },
+                    "b.com".to_string(),
+                )],
                 next: None,
             }
         );
     });
 
-    test_each_storage!(get_m2m_filters, |storage| {
+    test_each_storage!(get_m2m_no_filters, |storage| {
         storage.push(
             &ActionableEvent::CreateLinks {
                 record_id: RecordId {
@@ -1835,7 +1835,7 @@ mod tests {
             3,
         )?;
 
-        // Test without filters - should get all records grouped by secondary target
+        // Test without filters - should get all records as flat items
         let result = storage.get_many_to_many(
             "a.com",
             "app.t.c",
@@ -1846,40 +1846,34 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
         )?;
-        assert_eq!(result.items.len(), 2);
+        assert_eq!(result.items.len(), 4);
         assert_eq!(result.next, None);
-        // Find b.com group
-        let b_group = result
+        // Check b.com items
+        let b_items: Vec<_> = result
             .items
             .iter()
-            .find(|group| group.subject == "b.com")
-            .unwrap();
-        assert_eq!(b_group.subject, "b.com");
-        assert_eq!(b_group.records.len(), 2);
-        assert!(b_group
-            .records
+            .filter(|(_, subject)| subject == "b.com")
+            .collect();
+        assert_eq!(b_items.len(), 2);
+        assert!(b_items
             .iter()
-            .any(|r| r.did.0 == "did:plc:asdf" && r.rkey == "asdf"));
-        assert!(b_group
-            .records
+            .any(|(r, _)| r.did.0 == "did:plc:asdf" && r.rkey == "asdf"));
+        assert!(b_items
             .iter()
-            .any(|r| r.did.0 == "did:plc:asdf" && r.rkey == "asdf2"));
-        // Find c.com group
-        let c_group = result
+            .any(|(r, _)| r.did.0 == "did:plc:asdf" && r.rkey == "asdf2"));
+        // Check c.com items
+        let c_items: Vec<_> = result
             .items
             .iter()
-            .find(|group| group.subject == "c.com")
-            .unwrap();
-        assert_eq!(c_group.subject, "c.com");
-        assert_eq!(c_group.records.len(), 2);
-        assert!(c_group
-            .records
+            .filter(|(_, subject)| subject == "c.com")
+            .collect();
+        assert_eq!(c_items.len(), 2);
+        assert!(c_items
             .iter()
-            .any(|r| r.did.0 == "did:plc:fdsa" && r.rkey == "fdsa"));
-        assert!(c_group
-            .records
+            .any(|(r, _)| r.did.0 == "did:plc:fdsa" && r.rkey == "fdsa"));
+        assert!(c_items
             .iter()
-            .any(|r| r.did.0 == "did:plc:fdsa" && r.rkey == "fdsa2"));
+            .any(|(r, _)| r.did.0 == "did:plc:fdsa" && r.rkey == "fdsa2"));
 
         // Test with DID filter - should only get records from did:plc:fdsa
         let result = storage.get_many_to_many(
@@ -1892,11 +1886,9 @@ mod tests {
             &HashSet::from_iter([Did("did:plc:fdsa".to_string())]),
             &HashSet::new(),
         )?;
-        assert_eq!(result.items.len(), 1);
-        let group = &result.items[0];
-        assert_eq!(group.subject, "c.com");
-        assert_eq!(group.records.len(), 2);
-        assert!(group.records.iter().all(|r| r.did.0 == "did:plc:fdsa"));
+        assert_eq!(result.items.len(), 2);
+        assert!(result.items.iter().all(|(_, subject)| subject == "c.com"));
+        assert!(result.items.iter().all(|(r, _)| r.did.0 == "did:plc:fdsa"));
 
         // Test with target filter - should only get records linking to b.com
         let result = storage.get_many_to_many(
@@ -1909,10 +1901,8 @@ mod tests {
             &HashSet::new(),
             &HashSet::from_iter(["b.com".to_string()]),
         )?;
-        assert_eq!(result.items.len(), 1);
-        let group = &result.items[0];
-        assert_eq!(group.subject, "b.com");
-        assert_eq!(group.records.len(), 2);
-        assert!(group.records.iter().all(|r| r.did.0 == "did:plc:asdf"));
+        assert_eq!(result.items.len(), 2);
+        assert!(result.items.iter().all(|(_, subject)| subject == "b.com"));
+        assert!(result.items.iter().all(|(r, _)| r.did.0 == "did:plc:asdf"));
     });
 }

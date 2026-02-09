@@ -4,7 +4,7 @@
 	"defs": {
 		"main": {
 			"type": "query",
-			"description": "Get records that link to a primary subject, grouped by the secondary subjects they also reference",
+			"description": "Get records that link to a primary subject along with the secondary subjects they also reference",
 			"parameters": {
 				"type": "params",
 				"required": ["subject", "source", "pathToOther"],
@@ -50,37 +50,32 @@
 				"encoding": "application/json",
 				"schema": {
 					"type": "object",
-					"required": ["linking_records"],
+					"required": ["items"],
 					"properties": {
-						"linking_records": {
+						"items": {
 							"type": "array",
 							"items": {
 								"type": "ref",
-								"ref": "#recordsBySubject"
+								"ref": "#item"
 							}
 						},
 						"cursor": {
-							"type": "string",
-							"description": "pagination cursor"
+							"type": "string"
 						}
 					}
 				}
 			}
 		},
-		"recordsBySubject": {
+		"item": {
 			"type": "object",
-			"required": ["subject", "records"],
+			"required": ["link", "subject"],
 			"properties": {
-				"subject": {
-					"type": "string",
-					"description": "the secondary subject that these records link to"
+				"link": {
+					"type": "ref",
+					"ref": "#linkRecord"
 				},
-				"records": {
-					"type": "array",
-					"items": {
-						"type": "ref",
-						"ref": "#linkRecord"
-					}
+				"subject": {
+					"type": "string"
 				}
 			}
 		},

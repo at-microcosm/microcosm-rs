@@ -2,7 +2,7 @@ use super::{
     ActionableEvent, LinkReader, LinkStorage, Order, PagedAppendingCollection,
     PagedOrderedCollection, StorageStats,
 };
-use crate::{CountsByCount, Did, RecordId, RecordsBySubject};
+use crate::{CountsByCount, Did, RecordId};
 use anyhow::{bail, Result};
 use bincode::Options as BincodeOptions;
 use links::CollectedLink;
@@ -1132,7 +1132,7 @@ impl LinkReader for RocksStorage {
         after: Option<String>,
         filter_dids: &HashSet<Did>,
         filter_to_targets: &HashSet<String>,
-    ) -> Result<PagedOrderedCollection<RecordsBySubject, String>> {
+    ) -> Result<PagedOrderedCollection<(RecordId, String), String>> {
         let collection = Collection(collection.to_string());
         let path = RPath(path.to_string());
 
@@ -1241,7 +1241,7 @@ impl LinkReader for RocksStorage {
             }
         }
 
-        let mut items: Vec<RecordsBySubject> = Vec::with_capacity(grouped_links.len());
+        let mut items: Vec<(RecordId, String)> = Vec::with_capacity(grouped_links.len());
         for (fwd_target_id, records) in &grouped_links {
             let Some(target_key) = self
                 .target_id_table
@@ -1253,10 +1253,9 @@ impl LinkReader for RocksStorage {
 
             let target_string = target_key.0 .0;
 
-            items.push(RecordsBySubject {
-                subject: target_string,
-                records: records.clone(),
-            });
+            records
+                .iter()
+                .for_each(|r| items.push((r.clone(), target_string.clone())));
         }
 
         let next = if grouped_links.len() as u64 >= limit {

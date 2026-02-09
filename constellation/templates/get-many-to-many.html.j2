@@ -23,14 +23,12 @@
 
   <h3>Many-to-many links, most recent first:</h3>
 
-  {% for group in linking_records %}
-    <h4>Target: <code>{{ group.subject }}</code> <small>(<a href="/links/all?target={{ group.subject|urlencode }}">view all links</a>)</small></h4>
-    {% for record in group.records %}
-      <pre style="display: block; margin: 1em 2em" class="code"><strong>DID</strong>:        {{ record.did().0 }}
-<strong>Collection</strong>: {{ record.collection }}
-<strong>RKey</strong>:       {{ record.rkey }}
--> <a href="https://pdsls.dev/at://{{ record.did().0 }}/{{ record.collection }}/{{ record.rkey }}">browse record</a></pre>
-    {% endfor %}
+  {% for item in items %}
+    <pre style="display: block; margin: 1em 2em" class="code"><strong>Subject</strong>:    <a href="/links/all?target={{ item.subject|urlencode }}">{{ item.subject }}</a>
+<strong>DID</strong>:        {{ item.link.did().0 }}
+<strong>Collection</strong>: {{ item.link.collection }}
+<strong>RKey</strong>:       {{ item.link.rkey }}
+-> <a href="https://pdsls.dev/at://{{ item.link.did().0 }}/{{ item.link.collection }}/{{ item.link.rkey }}">browse record</a></pre>
   {% endfor %}
 
   {% if let Some(c) = cursor %}

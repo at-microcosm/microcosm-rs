@@ -1,7 +1,7 @@
 use super::{
     LinkReader, LinkStorage, Order, PagedAppendingCollection, PagedOrderedCollection, StorageStats,
 };
-use crate::{ActionableEvent, CountsByCount, Did, RecordId, RecordsBySubject};
+use crate::{ActionableEvent, CountsByCount, Did, RecordId};
 use anyhow::Result;
 use links::CollectedLink;
 use std::collections::{HashMap, HashSet};
@@ -244,7 +244,7 @@ impl LinkReader for MemStorage {
         after: Option<String>,
         filter_dids: &HashSet<Did>,
         filter_to_targets: &HashSet<String>,
-    ) -> Result<PagedOrderedCollection<RecordsBySubject, String>> {
+    ) -> Result<PagedOrderedCollection<(RecordId, String), String>> {
         let empty_res = Ok(PagedOrderedCollection {
             items: Vec::new(),
             next: None,
@@ -307,22 +307,24 @@ impl LinkReader for MemStorage {
 
         let mut items = grouped_links
             .into_iter()
-            .map(|(t, r)| RecordsBySubject {
-                subject: t.0,
-                records: r,
+            .flat_map(|(target, records)| {
+                records
+                    .iter()
+                    .map(move |r| (r.clone(), target.0.clone()))
+                    .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
 
-        items.sort_by(|a, b| a.subject.cmp(&b.subject));
+        items.sort_by(|a: &(RecordId, String), b| a.1.cmp(&b.1));
 
         items = items
             .into_iter()
-            .skip_while(|item| after.as_ref().map(|a| &item.subject <= a).unwrap_or(false))
+            .skip_while(|item| after.as_ref().map(|a| &item.1 <= a).unwrap_or(false))
             .take(limit as usize)
             .collect();
 
         let next = if items.len() as u64 >= limit {
-            items.last().map(|item| item.subject.clone())
+            items.last().map(|item| item.1.clone())
         } else {
             None
         };

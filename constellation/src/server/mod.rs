@@ -18,7 +18,7 @@ use tokio::task::spawn_blocking;
 use tokio_util::sync::CancellationToken;
 
 use crate::storage::{LinkReader, Order, StorageStats};
-use crate::{CountsByCount, Did, RecordId, RecordsBySubject};
+use crate::{CountsByCount, Did, RecordId};
 
 mod acceptable;
 mod filters;
@@ -695,10 +695,15 @@ struct GetManyToManyItemsQuery {
     #[serde(default = "get_default_cursor_limit")]
     limit: u64,
 }
+#[derive(Debug, Serialize, Clone)]
+struct ManyToManyItem {
+    link: RecordId,
+    subject: String,
+}
 #[derive(Template, Serialize)]
 #[template(path = "get-many-to-many.html.j2")]
 struct GetManyToManyItemsResponse {
-    linking_records: Vec<RecordsBySubject>,
+    items: Vec<ManyToManyItem>,
     cursor: Option<OpaqueApiCursor>,
     #[serde(skip_serializing)]
     query: GetManyToManyItemsQuery,
@@ -759,10 +764,19 @@ fn get_many_to_many(
 
     let cursor = paged.next.map(|next| ApiKeyedCursor { next }.into());
 
+    let items: Vec<ManyToManyItem> = paged
+        .items
+        .into_iter()
+        .map(|(record_id, subject)| ManyToManyItem {
+            link: record_id,
+            subject,
+        })
+        .collect();
+
     Ok(acceptable(
         accept,
         GetManyToManyItemsResponse {
-            linking_records: paged.items,
+            items,
             cursor,
             query: (*query).clone(),
         },
