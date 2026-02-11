@@ -2,6 +2,7 @@ use super::{
     ActionableEvent, LinkReader, LinkStorage, Order, PagedAppendingCollection,
     PagedOrderedCollection, StorageStats,
 };
+use crate::storage::{decode_m2m_cursor, encode_m2m_cursor};
 use crate::{CountsByCount, Did, RecordId};
 use anyhow::{bail, Result};
 use bincode::Options as BincodeOptions;
@@ -1138,7 +1139,8 @@ impl LinkReader for RocksStorage {
 
         let target_key = TargetKey(Target(target.to_string()), collection.clone(), path);
 
-        let after = after.map(|s| s.parse::<u64>().map(TargetId)).transpose()?;
+        // Parse cursor if provided (malformed cursor silently ignored)
+        let after_cursor = after.and_then(|a| decode_m2m_cursor(&a).ok());
 
         let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? else {
             eprintln!("Target not found for {target_key:?}");
@@ -1212,14 +1214,50 @@ impl LinkReader for RocksStorage {
                 continue;
             };
 
-            // pagination logic mirrors what is currently done in get_many_to_many_counts
-            if after.as_ref().map(|a| fwd_target <= *a).unwrap_or(false) {
-                continue;
-            }
             let page_is_full = grouped_links.len() as u64 >= limit;
             if page_is_full {
                 let current_max = grouped_links.keys().next_back().unwrap();
                 if fwd_target > *current_max {
+                    continue;
+                }
+            }
+
+            // link to be added
+            let record_id = RecordId {
+                did,
+                collection: collection.0.clone(),
+                rkey: rkey.0,
+            };
+
+            // pagination:
+            if after_cursor.is_some() {
+                // extract composite-cursor parts
+                let Some((after_did, after_rkey, after_subject)) = &after_cursor else {
+                    continue;
+                };
+
+                let Some(fwd_target_key) = self
+                    .target_id_table
+                    .get_val_from_id(&self.db, fwd_target.0)?
+                else {
+                    eprintln!("failed to look up target from target_id {fwd_target:?}");
+                    continue;
+                };
+
+                // first try and  compare by subject only
+                if &fwd_target_key.0 .0 != after_subject
+                    && fwd_target_key.0 .0.cmp(after_subject).is_le()
+                {
+                    continue;
+                }
+
+                // then, if needed, we compare by record id
+                let cursor_id = RecordId {
+                    did: Did(after_did.clone()),
+                    collection: collection.0.clone(),
+                    rkey: after_rkey.clone(),
+                };
+                if record_id.cmp(&cursor_id).is_le() {
                     continue;
                 }
             }
@@ -1230,11 +1268,7 @@ impl LinkReader for RocksStorage {
                 should_evict = page_is_full;
                 Vec::default()
             });
-            entry.push(RecordId {
-                did,
-                collection: collection.0.clone(),
-                rkey: rkey.0,
-            });
+            entry.push(record_id);
 
             if should_evict {
                 grouped_links.pop_last();
@@ -1258,8 +1292,12 @@ impl LinkReader for RocksStorage {
                 .for_each(|r| items.push((r.clone(), target_string.clone())));
         }
 
-        let next = if grouped_links.len() as u64 >= limit {
-            grouped_links.keys().next_back().map(|k| format!("{}", k.0))
+        // Build new cursor from last the item, if needed
+        let next = if items.len() as u64 > limit {
+            items.truncate(limit as usize);
+            items
+                .last()
+                .map(|item| encode_m2m_cursor(&item.0.did.0, &item.0.rkey, &item.1))
         } else {
             None
         };

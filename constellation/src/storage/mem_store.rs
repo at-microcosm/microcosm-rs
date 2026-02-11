@@ -1,6 +1,7 @@
 use super::{
     LinkReader, LinkStorage, Order, PagedAppendingCollection, PagedOrderedCollection, StorageStats,
 };
+use crate::storage::{decode_m2m_cursor, encode_m2m_cursor};
 use crate::{ActionableEvent, CountsByCount, Did, RecordId};
 use anyhow::Result;
 use links::CollectedLink;
@@ -250,11 +251,6 @@ impl LinkReader for MemStorage {
             next: None,
         });
 
-        // struct MemStorageData {
-        //     dids: HashMap<Did, bool>,
-        //     targets: HashMap<Target, HashMap<Source, Linkers>>,
-        //     links: HashMap<Did, HashMap<RepoId, Vec<(RecordPath, Target)>>>,
-        // }
         let data = self.0.lock().unwrap();
 
         let Some(sources) = data.targets.get(&Target::new(target)) else {
@@ -315,16 +311,48 @@ impl LinkReader for MemStorage {
             })
             .collect::<Vec<_>>();
 
-        items.sort_by(|a: &(RecordId, String), b| a.1.cmp(&b.1));
+        // first try to sort by subject, then by did, collection and finally rkey
+        items.sort_by(|a, b| {
+            if a.1 == b.1 {
+                a.0.cmp(&b.0)
+            } else {
+                a.1.cmp(&b.1)
+            }
+        });
 
+        // Parse cursor if provided (malformed cursor silently ignored)
+        let after_cursor = after.and_then(|a| decode_m2m_cursor(&a).ok());
+
+        // Apply cursor: skip everything up to and including the cursor position
         items = items
             .into_iter()
-            .skip_while(|item| after.as_ref().map(|a| &item.1 <= a).unwrap_or(false))
-            .take(limit as usize)
+            .skip_while(|item| {
+                let Some((after_did, after_rkey, after_subject)) = &after_cursor else {
+                    return false;
+                };
+
+                if &item.1 == after_subject {
+                    // Same subject — compare by RecordId to find our position
+                    let cursor_id = RecordId {
+                        did: Did(after_did.clone()),
+                        collection: collection.to_string(),
+                        rkey: after_rkey.clone(),
+                    };
+                    item.0.cmp(&cursor_id).is_le()
+                } else {
+                    // Different subject — compare subjects directly
+                    item.1.cmp(after_subject).is_le()
+                }
+            })
+            .take(limit as usize + 1)
             .collect();
 
-        let next = if items.len() as u64 >= limit {
-            items.last().map(|item| item.1.clone())
+        // Build the new cursor from last item, if needed
+        let next = if items.len() as u64 > limit {
+            items.truncate(limit as usize);
+            items
+                .last()
+                .map(|item| encode_m2m_cursor(&item.0.did.0, &item.0.rkey, &item.1))
         } else {
             None
         };

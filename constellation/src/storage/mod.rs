@@ -6,6 +6,11 @@ use std::collections::{HashMap, HashSet};
 pub mod mem_store;
 pub use mem_store::MemStorage;
 
+use anyhow::anyhow;
+
+use base64::engine::general_purpose as b64;
+use base64::Engine as _;
+
 #[cfg(feature = "rocks")]
 pub mod rocks_store;
 #[cfg(feature = "rocks")]
@@ -154,6 +159,35 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
 
     /// assume all stats are estimates, since exact counts are very challenging for LSMs
     fn get_stats(&self) -> Result<StorageStats>;
+}
+
+// Shared helpers
+
+/// Decode a base64 cursor into its component parts (did, rkey, subject).
+/// The subject is placed last because it may contain '|' characters.
+pub(crate) fn decode_m2m_cursor(cursor: &str) -> Result<(String, String, String)> {
+    let decoded = String::from_utf8(b64::URL_SAFE.decode(cursor)?)?;
+    let mut parts = decoded.splitn(3, '|').map(String::from);
+
+    // Using .next() to pull each part out of the iterator in order.
+    // This avoids collecting into a Vec just to index and clone back out.
+    let did = parts
+        .next()
+        .ok_or_else(|| anyhow!("missing did in cursor"))?;
+    let rkey = parts
+        .next()
+        .ok_or_else(|| anyhow!("missing rkey in cursor"))?;
+    let subject = parts
+        .next()
+        .ok_or_else(|| anyhow!("missing subject in cursor"))?;
+
+    Ok((did, rkey, subject))
+}
+
+/// Encode cursor components into a base64 string.
+pub(crate) fn encode_m2m_cursor(did: &str, rkey: &str, subject: &str) -> String {
+    let raw = format!("{did}|{rkey}|{subject}");
+    b64::URL_SAFE.encode(&raw)
 }
 
 #[cfg(test)]
@@ -1904,5 +1938,86 @@ mod tests {
         assert_eq!(result.items.len(), 2);
         assert!(result.items.iter().all(|(_, subject)| subject == "b.com"));
         assert!(result.items.iter().all(|(r, _)| r.did.0 == "did:plc:asdf"));
+
+        // Pagination edge cases: we have 4 flat items
+
+        // Case 1: limit > items (limit=10, items=4) -> next should be None
+        let result = storage.get_many_to_many(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            10,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(result.items.len(), 4);
+        assert_eq!(result.next, None, "next should be None when items < limit");
+
+        // Case 2: limit == items (limit=4, items=4) -> next should be None
+        let result = storage.get_many_to_many(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            4,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(result.items.len(), 4);
+        assert_eq!(
+            result.next, None,
+            "next should be None when items == limit (no more pages)"
+        );
+
+        // Case 3: limit < items (limit=3, items=4) -> next should be Some
+        let result = storage.get_many_to_many(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            3,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(result.items.len(), 3);
+        assert!(
+            result.next.is_some(),
+            "next should be Some when items > limit"
+        );
+
+        // Verify second page returns remaining item with no cursor.
+        // This now works correctly because we use a composite cursor that includes
+        // (target, did, rkey), allowing pagination even when multiple records share
+        // the same target string.
+        let result2 = storage.get_many_to_many(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            3,
+            result.next,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(
+            result2.items.len(),
+            1,
+            "second page should have 1 remaining item"
+        );
+        assert_eq!(result2.next, None, "next should be None on final page");
+
+        // Verify we got all 4 unique items across both pages (no duplicates, no gaps)
+        let mut all_rkeys: Vec<_> = result.items.iter().map(|(r, _)| r.rkey.clone()).collect();
+        all_rkeys.extend(result2.items.iter().map(|(r, _)| r.rkey.clone()));
+        all_rkeys.sort();
+        assert_eq!(
+            all_rkeys,
+            vec!["asdf", "asdf2", "fdsa", "fdsa2"],
+            "should have all 4 records across both pages"
+        );
     });
 }
