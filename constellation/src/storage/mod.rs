@@ -1716,6 +1716,70 @@ mod tests {
                 next: None,
             }
         );
+
+        // Pagination edge cases: we have 2 grouped results (b.com and c.com)
+
+        // Case 1: limit > items (limit=10, items=2) -> next should be None
+        let result = storage.get_many_to_many_counts(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            10,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(result.items.len(), 2);
+        assert_eq!(result.next, None, "next should be None when items < limit");
+
+        // Case 2: limit == items (limit=2, items=2) -> next should be None
+        let result = storage.get_many_to_many_counts(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            2,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(result.items.len(), 2);
+        assert_eq!(
+            result.next, None,
+            "next should be None when items == limit (no more pages)"
+        );
+
+        // Case 3: limit < items (limit=1, items=2) -> next should be Some
+        let result = storage.get_many_to_many_counts(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            1,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(result.items.len(), 1);
+        assert!(
+            result.next.is_some(),
+            "next should be Some when items > limit"
+        );
+
+        // Verify second page returns remaining item with no cursor
+        let result2 = storage.get_many_to_many_counts(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            1,
+            result.next,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(result2.items.len(), 1);
+        assert_eq!(result2.next, None, "next should be None on final page");
     });
 
     test_each_storage!(get_m2m_empty, |storage| {
@@ -1787,7 +1851,7 @@ mod tests {
         );
     });
 
-    test_each_storage!(get_m2m_no_filters, |storage| {
+    test_each_storage!(get_m2m_filters, |storage| {
         storage.push(
             &ActionableEvent::CreateLinks {
                 record_id: RecordId {

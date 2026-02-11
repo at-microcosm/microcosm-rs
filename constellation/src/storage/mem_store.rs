@@ -198,9 +198,10 @@ impl LinkReader for MemStorage {
         items = items
             .into_iter()
             .skip_while(|(t, _, _)| after.as_ref().map(|a| t <= a).unwrap_or(false))
-            .take(limit as usize)
+            .take(limit as usize + 1)
             .collect();
-        let next = if items.len() as u64 >= limit {
+        let next = if items.len() as u64 > limit {
+            items.truncate(limit as usize);
             items.last().map(|(t, _, _)| t.clone())
         } else {
             None

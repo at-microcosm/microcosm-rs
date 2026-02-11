@@ -1033,9 +1033,9 @@ impl LinkReader for RocksStorage {
 
             // aand we can skip target ids that must be on future pages
             // (this check continues after the did-lookup, which we have to do)
-            let page_is_full = grouped_counts.len() as u64 >= limit;
+            let page_is_full = grouped_counts.len() as u64 > limit;
             if page_is_full {
-                let current_max = grouped_counts.keys().next_back().unwrap(); // limit should be non-zero bleh
+                let current_max = grouped_counts.keys().next_back().unwrap();
                 if fwd_target > *current_max {
                     continue;
                 }
@@ -1071,6 +1071,18 @@ impl LinkReader for RocksStorage {
             }
         }
 
+        // If we accumulated more than limit groups, there's another page.
+        // Pop the extra before building items so it doesn't appear in results.
+        let next = if grouped_counts.len() as u64 > limit {
+            grouped_counts.pop_last();
+            grouped_counts
+                .keys()
+                .next_back()
+                .map(|k| format!("{}", k.0))
+        } else {
+            None
+        };
+
         let mut items: Vec<(String, u64, u64)> = Vec::with_capacity(grouped_counts.len());
         for (target_id, (n, dids)) in &grouped_counts {
             let Some(target) = self
@@ -1082,16 +1094,6 @@ impl LinkReader for RocksStorage {
             };
             items.push((target.0 .0, *n, dids.len() as u64));
         }
-
-        let next = if grouped_counts.len() as u64 >= limit {
-            // yeah.... it's a number saved as a string......sorry
-            grouped_counts
-                .keys()
-                .next_back()
-                .map(|k| format!("{}", k.0))
-        } else {
-            None
-        };
 
         Ok(PagedOrderedCollection { items, next })
     }
