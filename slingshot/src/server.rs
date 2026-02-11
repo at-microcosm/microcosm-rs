@@ -13,12 +13,12 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use poem::{
-    Endpoint, EndpointExt, IntoResponse, Route, Server,
+    Endpoint, EndpointExt, IntoResponse, Route, RouteScheme, Server,
     endpoint::{StaticFileEndpoint, make_sync},
     http::Method,
     listener::{
         Listener, TcpListener,
-        acme::{AutoCert, LETS_ENCRYPT_PRODUCTION},
+        acme::{AutoCert, ChallengeType, LETS_ENCRYPT_PRODUCTION, LETS_ENCRYPT_STAGING},
     },
     middleware::{CatchPanic, Cors, Tracing},
 };
@@ -1311,10 +1311,12 @@ pub async fn serve(
     repo: Repo,
     proxy: Proxy,
     base_url: url::Url,
-    acme_domain: Option<String>,
+    tls_domain: Option<String>,
+    tls_certs: Option<PathBuf>,
+    tls_ipv6: bool,
+    acme_challenge_redirect: Option<String>,
     acme_contact: Option<String>,
-    acme_cache_path: Option<PathBuf>,
-    acme_ipv6: bool,
+    acme_staging: bool,
     shutdown: CancellationToken,
     bind: std::net::SocketAddr,
 ) -> Result<(), ServerError> {
@@ -1331,7 +1333,7 @@ pub async fn serve(
         "Slingshot",
         env!("CARGO_PKG_VERSION"),
     )
-    .server(if let Some(ref h) = acme_domain {
+    .server(if let Some(ref h) = tls_domain {
         format!("https://{h}")
     } else {
         format!("http://{bind}") // yeah should probably fix this for reverse-proxy scenarios but it's ok for dev for now
@@ -1347,51 +1349,149 @@ pub async fn serve(
         "https://microcosm.blue/slingshot",
     ));
 
-    let mut app = Route::new()
+    let app = Route::new()
         .at("/", StaticFileEndpoint::new("./static/index.html"))
         .nest("/openapi", api_service.spec_endpoint())
         .nest("/xrpc/", api_service);
 
-    if let Some(domain) = acme_domain {
+    let cors = Cors::new()
+        .allow_origin_regex("*")
+        .allow_methods([Method::GET, Method::POST])
+        .allow_credentials(false);
+
+    if let Some(domain) = tls_domain {
         rustls::crypto::aws_lc_rs::default_provider()
             .install_default()
             .expect("alskfjalksdjf");
 
-        app = app.at("/.well-known/did.json", get_did_doc(&domain));
+        let app = app
+            .at("/.well-known/did.json", get_did_doc(&domain))
+            .with(cors);
 
-        let mut auto_cert = AutoCert::builder()
-            .directory_url(LETS_ENCRYPT_PRODUCTION)
-            .domain(&domain);
         if let Some(contact) = acme_contact {
-            auto_cert = auto_cert.contact(contact);
+            let (listener, app) = acmify(app, domain, tls_certs, tls_ipv6, contact, acme_staging)?;
+            run(listener, app, shutdown).await
+        } else {
+            let certs = tls_certs.expect("certs path must be set for non-acme tls");
+            let (listener, app) = tlsify(app, domain, certs, tls_ipv6, acme_challenge_redirect)?;
+            run(listener, app, shutdown).await
         }
-        if let Some(cache_path) = acme_cache_path {
-            auto_cert = auto_cert.cache_path(cache_path);
-        }
-        let auto_cert = auto_cert.build().map_err(ServerError::AcmeBuildError)?;
-
-        run(
-            TcpListener::bind(if acme_ipv6 { "[::]:443" } else { "0.0.0.0:443" }).acme(auto_cert),
-            app,
-            shutdown,
-        )
-        .await
     } else {
-        run(TcpListener::bind(bind), app, shutdown).await
+        run(TcpListener::bind(bind), app.with(cors), shutdown).await
     }
 }
 
-async fn run<L>(listener: L, app: Route, shutdown: CancellationToken) -> Result<(), ServerError>
+fn acmify(
+    app: impl Endpoint + 'static,
+    domain: String,
+    tls_certs: Option<PathBuf>,
+    tls_ipv6: bool,
+    acme_contact: String,
+    acme_staging: bool,
+) -> Result<(impl Listener + 'static, impl Endpoint + 'static), ServerError> {
+    let mut auto_cert = AutoCert::builder()
+        .contact(acme_contact)
+        .directory_url(if acme_staging {
+            LETS_ENCRYPT_STAGING
+        } else {
+            LETS_ENCRYPT_PRODUCTION
+        })
+        .domain(&domain)
+        .challenge_type(ChallengeType::Http01);
+
+    if let Some(path) = tls_certs {
+        auto_cert = auto_cert.cache_path(path);
+    } else {
+        log::warn!(
+            "provisioning acme certs without `--tls-certs` folder configured, you might hit letsencrypt rate limits."
+        );
+    }
+
+    let auto_cert = auto_cert.build().map_err(ServerError::AcmeBuildError)?;
+
+    let app = RouteScheme::new()
+        .https(app)
+        .http(auto_cert.http_01_endpoint());
+
+    let listener = TcpListener::bind(if tls_ipv6 { "[::]:443" } else { "0.0.0.0:443" })
+        .acme(auto_cert)
+        .combine(TcpListener::bind(if tls_ipv6 {
+            "[::]:80"
+        } else {
+            "0.0.0.0:80"
+        }));
+
+    Ok((listener, app))
+}
+
+fn tlsify(
+    app: impl Endpoint + 'static,
+    domain: String,
+    tls_certs: PathBuf,
+    tls_ipv6: bool,
+    acme_challenge_redirect: Option<String>,
+) -> Result<(impl Listener + 'static, impl Endpoint + 'static), ServerError> {
+    use poem::listener::{RustlsCertificate, RustlsConfig};
+    use std::path::Path;
+
+    fn load_tls_config(f: &Path, domain: &str) -> Result<RustlsConfig, std::io::Error> {
+        let cert_contents = std::fs::read(f.join("cert.pem"))
+            .inspect_err(|e| log::error!("failed to read cert file in {f:?}: {e}"))?;
+
+        let key_contents = std::fs::read(f.join("key.pem"))
+            .inspect_err(|e| log::error!("failed to read key file in {f:?}: {e}"))?;
+
+        let cert = RustlsCertificate::new()
+            .cert(cert_contents)
+            .key(key_contents);
+        Ok(RustlsConfig::new().certificate(domain, cert))
+    }
+
+    let listener = TcpListener::bind(if tls_ipv6 { "[::]:443" } else { "0.0.0.0:443" })
+        .rustls(async_stream::stream! {
+            loop {
+                if let Ok(tls_config) = load_tls_config(&tls_certs, &domain) {
+                    // TODO: cert reload healthcheck
+                    yield tls_config;
+                } else {
+                    log::warn!("failed to load tls config.");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(3600 * 12)).await;
+            }
+        })
+        // TODO: should be allowed to run in tls mode without binding port 80 if not forwarding acme challenges
+        .combine(TcpListener::bind(if tls_ipv6 {
+            "[::]:80"
+        } else {
+            "0.0.0.0:80"
+        }));
+
+    let app = if let Some(redir) = acme_challenge_redirect {
+        use poem::web;
+
+        let redirect = poem::endpoint::make_sync(move |req| {
+            let token = req.path_params::<String>().unwrap();
+            metrics::counter!("http_challenge_redirects").increment(1);
+            web::Redirect::temporary(format!("{redir}{token}"))
+        });
+
+        RouteScheme::new()
+            .https(app)
+            .http(Route::new().at("/.well-known/acme-challenge/:token", redirect))
+    } else {
+        // just uh... 404 for port 80? should probably reply with something.
+        RouteScheme::new().https(app).http(Route::new())
+    };
+
+    Ok((listener, app))
+}
+
+async fn run<L, A>(listener: L, app: A, shutdown: CancellationToken) -> Result<(), ServerError>
 where
     L: Listener + 'static,
+    A: Endpoint + 'static,
 {
     let app = app
-        .with(
-            Cors::new()
-                .allow_origin_regex("*")
-                .allow_methods([Method::GET, Method::POST])
-                .allow_credentials(false),
-        )
         .with(CatchPanic::new())
         .around(request_counter)
         .with(Tracing);

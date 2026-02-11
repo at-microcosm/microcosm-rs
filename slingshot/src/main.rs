@@ -50,38 +50,58 @@ struct Args {
     /// the address of this server
     ///
     /// used if --acme-domain is not set, defaulting to `--bind`
-    #[arg(long, conflicts_with("acme_domain"), env = "SLINGSHOT_PUBLIC_HOST")]
+    #[arg(long, conflicts_with("tls_domain"), env = "SLINGSHOT_PUBLIC_HOST")]
     base_url: Option<Url>,
     /// the domain pointing to this server
     ///
     /// if present:
     /// - a did:web document will be served at /.well-known/did.json
-    /// - an HTTPS certs will be automatically configured with Acme/letsencrypt
+    /// - the server will bind on port 443
+    /// - if `--acme-contact` is present, the server will bind port 80 for http
+    ///   challenges and attempt to auto-provision certs for `--tls-domain`
+    /// - if `--acme-contact is absent, the server will load certs from the
+    ///   `--tls-certs` folder, and try to reload them twice daily, guarded by
+    ///   a lock file called `.cert-lock` in the `--tls-certs` folder.
     /// - TODO: a rate-limiter will be installed
     #[arg(
         long,
         conflicts_with("bind"),
-        requires("acme_cache_path"),
-        env = "SLINGSHOT_ACME_DOMAIN"
+        requires("tls_certs"),
+        env = "SLINGSHOT_TLS_DOMAIN"
     )]
-    acme_domain: Option<String>,
+    tls_domain: Option<String>,
+    /// a location to find/cache acme or other tls certs
+    ///
+    /// recommended in production, mind the file permissions.
+    #[arg(long, env = "SLINGSHOT_TLS_CERTS_PATH")]
+    tls_certs: Option<PathBuf>,
+    /// listen for ipv6 when using acme or other tls
+    ///
+    /// you must also configure the relevant DNS records for this to work
+    #[arg(long, action, requires("tls_domain"), env = "SLINGSHOT_TLS_IPV6")]
+    tls_ipv6: bool,
+    /// redirect acme http-01 challenges to this url
+    ///
+    /// useful if you're setting up a second instance that synchronizes its
+    /// certs from a main instance doing acme.
+    #[arg(
+        long,
+        conflicts_with("acme_contact"),
+        requires("tls_domain"),
+        env = "SLINGSHOT_ACME_CHALLENGE_REDIRECT"
+    )]
+    acme_challenge_redirect: Option<String>,
     /// email address for letsencrypt contact
     ///
     /// recommended in production, i guess?
-    #[arg(long, requires("acme_domain"), env = "SLINGSHOT_ACME_CONTACT")]
+    #[arg(long, requires("tls_domain"), env = "SLINGSHOT_ACME_CONTACT")]
     acme_contact: Option<String>,
-    /// a location to cache acme https certs
+    /// use the staging environment for letsencrypt
     ///
-    /// required when (and only used when) --acme-domain is specified.
-    ///
-    /// recommended in production, but mind the file permissions.
-    #[arg(long, requires("acme_domain"), env = "SLINGSHOT_ACME_CACHE_PATH")]
-    acme_cache_path: Option<PathBuf>,
-    /// listen for ipv6 when using acme
-    ///
-    /// you must also configure the relevant DNS records for this to work
-    #[arg(long, action, requires("acme_domain"), env = "SLINGSHOT_ACME_IPV6")]
-    acme_ipv6: bool,
+    /// recommended to initially test out new deployments with this to avoid
+    /// letsencrypt rate limit problems.
+    #[arg(long, action, requires("acme_contact"), env = "SLINGSHOT_ACME_STAGING")]
+    acme_staging: bool,
     /// an web address to send healtcheck pings to every ~51s or so
     #[arg(long, env = "SLINGSHOT_HEALTHCHECK")]
     healthcheck: Option<String>,
@@ -108,7 +128,7 @@ async fn main() -> Result<(), String> {
     let base_url: Url = args
         .base_url
         .or_else(|| {
-            args.acme_domain
+            args.tls_domain
                 .as_ref()
                 .map(|d| Url::parse(&format!("https://{d}")).unwrap())
         })
@@ -178,10 +198,12 @@ async fn main() -> Result<(), String> {
             repo,
             proxy,
             base_url,
-            args.acme_domain,
+            args.tls_domain,
+            args.tls_certs,
+            args.tls_ipv6,
+            args.acme_challenge_redirect,
             args.acme_contact,
-            args.acme_cache_path,
-            args.acme_ipv6,
+            args.acme_staging,
             server_shutdown,
             bind,
         )
