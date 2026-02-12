@@ -18,8 +18,8 @@ links = { path = "../links" }
 log = "0.4.27"
 metrics = "0.24.2"
 metrics-exporter-prometheus = { version = "0.17.1", features = ["http-listener"] }
-poem = { version = "3.1.12", features = ["acme", "static-files"] }
-poem-openapi = { version = "5.1.16", features = ["scalar"] }
+poem = { git = "https://github.com/uniphil/poem.git", branch = "acme/issue-async", features = ["acme", "static-files"] }
+poem-openapi = { git = "https://github.com/uniphil/poem.git", branch = "acme/issue-async", features = ["scalar"] }
 reqwest = { version = "0.12.22", features = ["json"] }
 rustls = "0.23.31"
 serde = { version = "1.0.219", features = ["derive"] }

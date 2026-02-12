@@ -36,7 +36,7 @@ struct Args {
     #[clap(default_value_t = 64)]
     record_cache_memory_mb: usize,
     /// disk cache size in gigabytes for records
-    #[arg(long, env = "SLINGSHOT_RECORD_CACHE_DISK_DB")]
+    #[arg(long, env = "SLINGSHOT_RECORD_CACHE_DISK_GB")]
     #[clap(default_value_t = 1)]
     record_cache_disk_gb: usize,
     /// memory cache size in megabytes for identities
@@ -44,7 +44,7 @@ struct Args {
     #[clap(default_value_t = 64)]
     identity_cache_memory_mb: usize,
     /// disk cache size in gigabytes for identities
-    #[arg(long, env = "SLINGSHOT_IDENTITY_CACHE_DISK_DB")]
+    #[arg(long, env = "SLINGSHOT_IDENTITY_CACHE_DISK_GB")]
     #[clap(default_value_t = 1)]
     identity_cache_disk_gb: usize,
     /// the address of this server
