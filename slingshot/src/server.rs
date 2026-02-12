@@ -1466,7 +1466,13 @@ fn tlsify(
             "0.0.0.0:80"
         }));
 
-    let https_plz = "this service must be accessed with https (port 443).";
+    #[poem::handler]
+    async fn https_plz() -> (poem::http::StatusCode, &'static str) {
+        (
+            poem::http::StatusCode::MISDIRECTED_REQUEST,
+            "this service must be accessed with https (port 443).",
+        )
+    }
 
     let app = if let Some(redir) = acme_challenge_redirect {
         use poem::web;
@@ -1479,13 +1485,14 @@ fn tlsify(
 
         RouteScheme::new().https(app).http(
             Route::new()
-                .nest("/", make_sync(move |_| https_plz))
-                .at("/.well-known/acme-challenge/:token", redirect),
+                .at("/.well-known/acme-challenge/:token", redirect)
+                .at("/*any", https_plz)
+                .at("/", https_plz),
         )
     } else {
         RouteScheme::new()
             .https(app)
-            .http(Route::new().nest("/", make_sync(move |_| https_plz)))
+            .http(Route::new().at("/*any", https_plz).at("/", https_plz))
     };
 
     Ok((listener, app))
