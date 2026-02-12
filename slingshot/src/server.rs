@@ -1466,6 +1466,8 @@ fn tlsify(
             "0.0.0.0:80"
         }));
 
+    let https_plz = "this service must be accessed with https (port 443).";
+
     let app = if let Some(redir) = acme_challenge_redirect {
         use poem::web;
 
@@ -1475,12 +1477,15 @@ fn tlsify(
             web::Redirect::temporary(format!("{redir}{token}"))
         });
 
+        RouteScheme::new().https(app).http(
+            Route::new()
+                .nest("/", make_sync(move |_| https_plz))
+                .at("/.well-known/acme-challenge/:token", redirect),
+        )
+    } else {
         RouteScheme::new()
             .https(app)
-            .http(Route::new().at("/.well-known/acme-challenge/:token", redirect))
-    } else {
-        // just uh... 404 for port 80? should probably reply with something.
-        RouteScheme::new().https(app).http(Route::new())
+            .http(Route::new().nest("/", make_sync(move |_| https_plz)))
     };
 
     Ok((listener, app))

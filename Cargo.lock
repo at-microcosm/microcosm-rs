@@ -3900,8 +3900,8 @@ dependencies = [
  "clap",
  "jwt-compact",
  "log",
- "poem",
- "poem-openapi",
+ "poem 3.1.12 (registry+https://github.com/rust-lang/crates.io-index)",
+ "poem-openapi 5.1.16 (registry+https://github.com/rust-lang/crates.io-index)",
  "reqwest",
  "rusqlite",
  "serde",
@@ -3934,7 +3934,7 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "pin-project-lite",
- "poem-derive",
+ "poem-derive 3.1.12 (registry+https://github.com/rust-lang/crates.io-index)",
  "quick-xml",
  "rcgen",
  "regex",
@@ -3956,7 +3956,54 @@ dependencies = [
  "tokio-util",
  "tracing",
  "wildmatch",
- "x509-parser",
+ "x509-parser 0.17.0",
+]
+
+[[package]]
+name = "poem"
+version = "3.1.12"
+source = "git+https://github.com/uniphil/poem.git?branch=acme%2Fissue-async#aa0067f0880c9e0a7b043bbf5f78f21c58b303f2"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "futures-util",
+ "headers",
+ "http",
+ "http-body-util",
+ "httpdate",
+ "hyper",
+ "hyper-util",
+ "mime",
+ "mime_guess",
+ "multer",
+ "nix",
+ "parking_lot",
+ "percent-encoding",
+ "pin-project-lite",
+ "poem-derive 3.1.12 (git+https://github.com/uniphil/poem.git?branch=acme%2Fissue-async)",
+ "quick-xml",
+ "rcgen",
+ "regex",
+ "reqwest",
+ "rfc7239",
+ "ring",
+ "rustls-pemfile",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "serde_yaml",
+ "smallvec",
+ "sync_wrapper",
+ "tempfile",
+ "thiserror 2.0.16",
+ "tokio",
+ "tokio-rustls 0.26.2",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "wildmatch",
+ "x509-parser 0.18.1",
 ]
 
 [[package]]
@@ -3964,6 +4011,17 @@ name = "poem-derive"
 version = "3.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "056e2fea6de1cb240ffe23cfc4fc370b629f8be83b5f27e16b7acd5231a72de4"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "poem-derive"
+version = "3.1.12"
+source = "git+https://github.com/uniphil/poem.git?branch=acme%2Fissue-async#aa0067f0880c9e0a7b043bbf5f78f21c58b303f2"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3985,8 +4043,33 @@ dependencies = [
  "itertools 0.14.0",
  "mime",
  "num-traits",
- "poem",
- "poem-openapi-derive",
+ "poem 3.1.12 (registry+https://github.com/rust-lang/crates.io-index)",
+ "poem-openapi-derive 5.1.16 (registry+https://github.com/rust-lang/crates.io-index)",
+ "quick-xml",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "serde_yaml",
+ "thiserror 2.0.16",
+ "tokio",
+]
+
+[[package]]
+name = "poem-openapi"
+version = "5.1.16"
+source = "git+https://github.com/uniphil/poem.git?branch=acme%2Fissue-async#aa0067f0880c9e0a7b043bbf5f78f21c58b303f2"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "derive_more",
+ "futures-util",
+ "indexmap 2.11.4",
+ "itertools 0.14.0",
+ "mime",
+ "num-traits",
+ "poem 3.1.12 (git+https://github.com/uniphil/poem.git?branch=acme%2Fissue-async)",
+ "poem-openapi-derive 5.1.16 (git+https://github.com/uniphil/poem.git?branch=acme%2Fissue-async)",
  "quick-xml",
  "regex",
  "serde",
@@ -4002,6 +4085,23 @@ name = "poem-openapi-derive"
 version = "5.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "41273b691a3d467a8c44d05506afba9f7b6bd56c9cdf80123de13fe52d7ec587"
+dependencies = [
+ "darling",
+ "http",
+ "indexmap 2.11.4",
+ "mime",
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "syn",
+ "thiserror 2.0.16",
+]
+
+[[package]]
+name = "poem-openapi-derive"
+version = "5.1.16"
+source = "git+https://github.com/uniphil/poem.git?branch=acme%2Fissue-async#aa0067f0880c9e0a7b043bbf5f78f21c58b303f2"
 dependencies = [
  "darling",
  "http",
@@ -4372,7 +4472,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "log",
- "poem",
+ "poem 3.1.12 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
  "tokio",
  "tracing-subscriber",
@@ -5115,8 +5215,8 @@ dependencies = [
  "log",
  "metrics",
  "metrics-exporter-prometheus 0.17.2",
- "poem",
- "poem-openapi",
+ "poem 3.1.12 (git+https://github.com/uniphil/poem.git?branch=acme%2Fissue-async)",
+ "poem-openapi 5.1.16 (git+https://github.com/uniphil/poem.git?branch=acme%2Fissue-async)",
  "reqwest",
  "rustls 0.23.31",
  "serde",
@@ -6575,6 +6675,23 @@ name = "x509-parser"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4569f339c0c402346d4a75a9e39cf8dad310e287eef1ff56d4c68e5067f53460"
+dependencies = [
+ "asn1-rs",
+ "data-encoding",
+ "der-parser",
+ "lazy_static",
+ "nom",
+ "oid-registry",
+ "rusticata-macros",
+ "thiserror 2.0.16",
+ "time",
+]
+
+[[package]]
+name = "x509-parser"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d43b0f71ce057da06bc0851b23ee24f3f86190b07203dd8f567d0b706a185202"
 dependencies = [
  "asn1-rs",
  "data-encoding",
