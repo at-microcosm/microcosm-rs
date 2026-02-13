@@ -1,10 +1,13 @@
 use super::{
     LinkReader, LinkStorage, Order, PagedAppendingCollection, PagedOrderedCollection, StorageStats,
 };
-use crate::storage::{decode_m2m_cursor, encode_m2m_cursor};
 use crate::{ActionableEvent, CountsByCount, Did, RecordId};
-use anyhow::Result;
+
+use anyhow::{anyhow, Result};
+use base64::engine::general_purpose as b64;
+use base64::Engine as _;
 use links::CollectedLink;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -245,119 +248,103 @@ impl LinkReader for MemStorage {
         limit: u64,
         after: Option<String>,
         filter_dids: &HashSet<Did>,
-        filter_to_targets: &HashSet<String>,
+        filter_targets: &HashSet<String>,
     ) -> Result<PagedOrderedCollection<(RecordId, String), String>> {
-        let empty_res = Ok(PagedOrderedCollection {
-            items: Vec::new(),
-            next: None,
-        });
+        // setup variables that we need later
+        let path_to_other = RecordPath(path_to_other.to_string());
+        let filter_targets: HashSet<Target> =
+            HashSet::from_iter(filter_targets.iter().map(|s| Target::new(s)));
+
+        // extract parts form composite cursor
+        let (backward_idx, forward_idx) = match after {
+            Some(a) => {
+                let after_str = String::from_utf8(b64::URL_SAFE.decode(a)?)?;
+                let (b, f) = after_str
+                    .split_once(',')
+                    .ok_or_else(|| anyhow!("invalid cursor format"))?;
+                (
+                    (!b.is_empty()).then(|| b.parse::<u64>()).transpose()?,
+                    (!f.is_empty()).then(|| f.parse::<u64>()).transpose()?,
+                )
+            }
+            None => (None, None),
+        };
 
         let data = self.0.lock().unwrap();
-
         let Some(sources) = data.targets.get(&Target::new(target)) else {
-            return empty_res;
+            return Ok(PagedOrderedCollection::empty());
         };
         let Some(linkers) = sources.get(&Source::new(collection, path)) else {
-            return empty_res;
+            return Ok(PagedOrderedCollection::empty());
         };
-        let path_to_other = RecordPath::new(path_to_other);
 
-        // Convert filter_to_targets to Target objects for comparison
-        let filter_to_target_objs: HashSet<Target> =
-            HashSet::from_iter(filter_to_targets.iter().map(|s| Target::new(s)));
+        let mut items: Vec<(usize, usize, RecordId, String)> = Vec::new();
 
-        let mut grouped_links: HashMap<Target, Vec<RecordId>> = HashMap::new();
-        for (did, rkey) in linkers.iter().flatten().cloned() {
-            // Filter by DID if filter is provided
-            if !filter_dids.is_empty() && !filter_dids.contains(&did) {
-                continue;
-            }
-            if let Some(fwd_target) = data
-                .links
-                .get(&did)
-                .unwrap_or(&HashMap::new())
-                .get(&RepoId {
+        // iterate backwards (who linked to the target?)
+        for (linker_idx, (did, rkey)) in linkers
+            .iter()
+            .enumerate()
+            .filter_map(|(i, opt)| opt.as_ref().map(|v| (i, v)))
+            .skip_while(|(linker_idx, _)| {
+                backward_idx.is_some_and(|idx| match forward_idx {
+                    Some(_) => *linker_idx < idx as usize, // inclusive: depend on link idx for skipping
+                    None => *linker_idx <= idx as usize,   // exclusive: skip right here
+                })
+            })
+            .filter(|(_, (did, _))| filter_dids.is_empty() || filter_dids.contains(&did))
+        {
+            let Some(links) = data.links.get(&did).and_then(|m| {
+                m.get(&RepoId {
                     collection: collection.to_string(),
                     rkey: rkey.clone(),
                 })
-                .unwrap_or(&Vec::new())
+            }) else {
+                continue;
+            };
+
+            // iterate forward (which of these links point to the __other__ target?)
+            for (link_idx, (_, fwd_target)) in links
                 .iter()
-                .find_map(|(path, target)| {
-                    if *path == path_to_other
-                        && (filter_to_target_objs.is_empty()
-                            || filter_to_target_objs.contains(target))
-                    {
-                        Some(target)
-                    } else {
-                        None
-                    }
+                .enumerate()
+                .filter(|(_, (p, t))| {
+                    *p == path_to_other && (filter_targets.is_empty() || filter_targets.contains(t))
                 })
+                .skip_while(|(link_idx, _)| {
+                    backward_idx.is_some_and(|bl_idx| {
+                        linker_idx == bl_idx as usize
+                            && forward_idx.is_some_and(|fwd_idx| *link_idx <= fwd_idx as usize)
+                    })
+                })
+                .take(limit as usize + 1 - items.len())
             {
-                let record_ids = grouped_links.entry(fwd_target.clone()).or_default();
-                record_ids.push(RecordId {
-                    did,
-                    collection: collection.to_string(),
-                    rkey: rkey.0,
-                });
+                items.push((
+                    linker_idx,
+                    link_idx,
+                    RecordId {
+                        did: did.clone(),
+                        collection: collection.to_string(),
+                        rkey: rkey.0.clone(),
+                    },
+                    fwd_target.0.clone(),
+                ));
+            }
+
+            // page full - eject
+            if items.len() > limit as usize {
+                break;
             }
         }
 
-        let mut items = grouped_links
-            .into_iter()
-            .flat_map(|(target, records)| {
-                records
-                    .iter()
-                    .map(move |r| (r.clone(), target.0.clone()))
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-
-        // first try to sort by subject, then by did, collection and finally rkey
-        items.sort_by(|a, b| {
-            if a.1 == b.1 {
-                a.0.cmp(&b.0)
-            } else {
-                a.1.cmp(&b.1)
-            }
-        });
-
-        // Parse cursor if provided (malformed cursor silently ignored)
-        let after_cursor = after.and_then(|a| decode_m2m_cursor(&a).ok());
-
-        // Apply cursor: skip everything up to and including the cursor position
-        items = items
-            .into_iter()
-            .skip_while(|item| {
-                let Some((after_did, after_rkey, after_subject)) = &after_cursor else {
-                    return false;
-                };
-
-                if &item.1 == after_subject {
-                    // Same subject — compare by RecordId to find our position
-                    let cursor_id = RecordId {
-                        did: Did(after_did.clone()),
-                        collection: collection.to_string(),
-                        rkey: after_rkey.clone(),
-                    };
-                    item.0.cmp(&cursor_id).is_le()
-                } else {
-                    // Different subject — compare subjects directly
-                    item.1.cmp(after_subject).is_le()
-                }
-            })
-            .take(limit as usize + 1)
-            .collect();
-
-        // Build the new cursor from last item, if needed
         let next = if items.len() as u64 > limit {
             items.truncate(limit as usize);
             items
                 .last()
-                .map(|item| encode_m2m_cursor(&item.0.did.0, &item.0.rkey, &item.1))
+                .map(|(l, f, _, _)| b64::URL_SAFE.encode(format!("{},{}", *l as u64, *f as u64)))
         } else {
             None
         };
 
+        let items = items.into_iter().map(|(_, _, rid, t)| (rid, t)).collect();
         Ok(PagedOrderedCollection { items, next })
     }
 

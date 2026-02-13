@@ -6,11 +6,6 @@ use std::collections::{HashMap, HashSet};
 pub mod mem_store;
 pub use mem_store::MemStorage;
 
-use anyhow::anyhow;
-
-use base64::engine::general_purpose as b64;
-use base64::Engine as _;
-
 #[cfg(feature = "rocks")]
 pub mod rocks_store;
 #[cfg(feature = "rocks")]
@@ -159,35 +154,6 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
 
     /// assume all stats are estimates, since exact counts are very challenging for LSMs
     fn get_stats(&self) -> Result<StorageStats>;
-}
-
-// Shared helpers
-
-/// Decode a base64 cursor into its component parts (did, rkey, subject).
-/// The subject is placed last because it may contain '|' characters.
-pub(crate) fn decode_m2m_cursor(cursor: &str) -> Result<(String, String, String)> {
-    let decoded = String::from_utf8(b64::URL_SAFE.decode(cursor)?)?;
-    let mut parts = decoded.splitn(3, '|').map(String::from);
-
-    // Using .next() to pull each part out of the iterator in order.
-    // This avoids collecting into a Vec just to index and clone back out.
-    let did = parts
-        .next()
-        .ok_or_else(|| anyhow!("missing did in cursor"))?;
-    let rkey = parts
-        .next()
-        .ok_or_else(|| anyhow!("missing rkey in cursor"))?;
-    let subject = parts
-        .next()
-        .ok_or_else(|| anyhow!("missing subject in cursor"))?;
-
-    Ok((did, rkey, subject))
-}
-
-/// Encode cursor components into a base64 string.
-pub(crate) fn encode_m2m_cursor(did: &str, rkey: &str, subject: &str) -> String {
-    let raw = format!("{did}|{rkey}|{subject}");
-    b64::URL_SAFE.encode(&raw)
 }
 
 #[cfg(test)]

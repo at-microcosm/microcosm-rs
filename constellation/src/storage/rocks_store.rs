@@ -2,9 +2,11 @@ use super::{
     ActionableEvent, LinkReader, LinkStorage, Order, PagedAppendingCollection,
     PagedOrderedCollection, StorageStats,
 };
-use crate::storage::{decode_m2m_cursor, encode_m2m_cursor};
 use crate::{CountsByCount, Did, RecordId};
-use anyhow::{bail, Result};
+
+use anyhow::{anyhow, bail, Result};
+use base64::engine::general_purpose as b64;
+use base64::Engine as _;
 use bincode::Options as BincodeOptions;
 use links::CollectedLink;
 use metrics::{counter, describe_counter, describe_histogram, histogram, Unit};
@@ -15,6 +17,8 @@ use rocksdb::{
     MultiThreaded, Options, PrefixRange, ReadOptions, WriteBatch,
 };
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::marker::PhantomData;
@@ -25,7 +29,6 @@ use std::sync::{
 };
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio_util::sync::CancellationToken;
 
 static DID_IDS_CF: &str = "did_ids";
 static TARGET_IDS_CF: &str = "target_ids";
@@ -1136,19 +1139,47 @@ impl LinkReader for RocksStorage {
         filter_dids: &HashSet<Did>,
         filter_to_targets: &HashSet<String>,
     ) -> Result<PagedOrderedCollection<(RecordId, String), String>> {
+        // helper to resolve dids
+        let resolve_active_did = |did_id: &DidId| -> Option<Did> {
+            let Some(did) = self.did_id_table.get_val_from_id(&self.db, did_id.0).ok()? else {
+                eprintln!("failed to look up did from did_id {did_id:?}");
+                return None;
+            };
+            let Some(DidIdValue(_, active)) = self.did_id_table.get_id_val(&self.db, &did).ok()?
+            else {
+                eprintln!("failed to look up did_value from did_id {did_id:?}: {did:?}: data consistency bug?");
+                return None;
+            };
+            active.then_some(did)
+        };
+
+        // setup variables that we need later
         let collection = Collection(collection.to_string());
         let path = RPath(path.to_string());
 
-        let target_key = TargetKey(Target(target.to_string()), collection.clone(), path);
+        // extract parts form composite cursor
+        let (backward_idx, forward_idx) = match after {
+            Some(a) => {
+                eprintln!("a: {:#?}", a);
 
-        // Parse cursor if provided (malformed cursor silently ignored)
-        let after_cursor = after.and_then(|a| decode_m2m_cursor(&a).ok());
+                let after_str = String::from_utf8(b64::URL_SAFE.decode(a)?)?;
 
-        let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? else {
-            eprintln!("Target not found for {target_key:?}");
-            return Ok(PagedOrderedCollection::empty());
+                eprintln!("after_str: {:#?}", after_str);
+                let (b, f) = after_str
+                    .split_once(',')
+                    .ok_or_else(|| anyhow!("invalid cursor format"))?;
+                (
+                    (!b.is_empty()).then(|| b.parse::<u64>()).transpose()?,
+                    (!f.is_empty()).then(|| f.parse::<u64>()).transpose()?,
+                )
+            }
+            None => (None, None),
         };
 
+        eprintln!("backward_idx: {:#?}", backward_idx);
+        eprintln!("forward_idx: {:#?}", forward_idx);
+
+        // (__active__) did ids and filter targets
         let filter_did_ids: HashMap<DidId, bool> = filter_dids
             .iter()
             .filter_map(|did| self.did_id_table.get_id_val(&self.db, did).transpose())
@@ -1156,7 +1187,6 @@ impl LinkReader for RocksStorage {
             .into_iter()
             .map(|DidIdValue(id, active)| (id, active))
             .collect();
-
         let mut filter_to_target_ids: HashSet<TargetId> = HashSet::new();
         for t in filter_to_targets {
             for (_, target_id) in self.iter_targets_for_target(&Target(t.to_string())) {
@@ -1164,142 +1194,129 @@ impl LinkReader for RocksStorage {
             }
         }
 
+        let target_key = TargetKey(Target(target.to_string()), collection.clone(), path);
+        let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? else {
+            eprintln!("Target not found for {target_key:?}");
+            return Ok(PagedOrderedCollection::empty());
+        };
+
         let linkers = self.get_target_linkers(&target_id)?;
 
-        // we want to provide many to many which effectively means that we want to show a specific
-        // list of reords that is linked to by a specific number of linkers
-        let mut grouped_links: BTreeMap<TargetId, Vec<RecordId>> = BTreeMap::new();
-        for (did_id, rkey) in linkers.0 {
-            if did_id.is_empty() {
-                continue;
-            }
+        eprintln!("linkers: {:#?}", linkers);
 
-            if !filter_did_ids.is_empty() && filter_did_ids.get(&did_id) != Some(&true) {
-                continue;
-            }
+        let mut items: Vec<(usize, TargetId, RecordId)> = Vec::new();
 
-            // Make sure the current did is active
-            let Some(did) = self.did_id_table.get_val_from_id(&self.db, did_id.0)? else {
-                eprintln!("failed to look up did from did_id {did_id:?}");
-                continue;
-            };
-            let Some(DidIdValue(_, active)) = self.did_id_table.get_id_val(&self.db, &did)? else {
-                eprintln!("failed to look up did_value from did_id {did_id:?}: {did:?}: data consistency bug?");
-                continue;
-            };
-            if !active {
-                continue;
-            }
-
-            let record_link_key = RecordLinkKey(did_id, collection.clone(), rkey.clone());
-            let Some(targets) = self.get_record_link_targets(&record_link_key)? else {
-                continue;
-            };
-
-            let Some(fwd_target) = targets
-                .0
-                .into_iter()
-                .filter_map(|RecordLinkTarget(rpath, target_id)| {
-                    if rpath.0 == path_to_other
-                        && (filter_to_target_ids.is_empty()
-                            || filter_to_target_ids.contains(&target_id))
-                    {
-                        Some(target_id)
-                    } else {
-                        None
-                    }
+        // iterate backwards (who linked to the target?)
+        for (linker_idx, (did_id, rkey)) in
+            linkers.0.iter().enumerate().skip_while(|(linker_idx, _)| {
+                backward_idx.is_some_and(|idx| match forward_idx {
+                    Some(_) => *linker_idx < idx as usize, // inclusive: depend on link idx for skipping
+                    None => *linker_idx <= idx as usize,   // exclusive: skip right here
                 })
-                .take(1)
-                .next()
+            })
+        {
+            // filter target did
+            if did_id.is_empty()
+                || (!filter_did_ids.is_empty() && filter_did_ids.get(&did_id).is_none())
+            {
+                continue;
+            }
+
+            eprintln!("did_did: {:#?}", did_id);
+
+            let Some(targets) = self.get_record_link_targets(&RecordLinkKey(
+                *did_id,
+                collection.clone(),
+                rkey.clone(),
+            ))?
             else {
-                eprintln!("no forward match found.");
+                continue;
+            };
+            let Some(fwd_target_id) =
+                targets
+                    .0
+                    .into_iter()
+                    .find_map(|RecordLinkTarget(rpath, target_id)| {
+                        eprintln!("rpath.0: {} vs. path_to_other: {path_to_other}", rpath.0);
+                        if rpath.0 == path_to_other
+                            && (filter_to_target_ids.is_empty()
+                                || filter_to_target_ids.contains(&target_id))
+                        {
+                            Some(target_id)
+                        } else {
+                            None
+                        }
+                    })
+            else {
                 continue;
             };
 
-            let page_is_full = grouped_links.len() as u64 >= limit;
+            if backward_idx.is_some_and(|bl_idx| {
+                linker_idx == bl_idx as usize
+                    && forward_idx.is_some_and(|fwd_idx| fwd_target_id.0 <= fwd_idx)
+            }) {
+                continue;
+            }
+
+            let page_is_full = items.len() as u64 >= limit;
+
+            eprintln!(
+                "page_is_full: {page_is_full} for items.len(): {}",
+                items.len()
+            );
+
             if page_is_full {
-                let current_max = grouped_links.keys().next_back().unwrap();
-                if fwd_target > *current_max {
+                let current_max = items.iter().next_back().unwrap().1;
+                if fwd_target_id > current_max {
                     continue;
                 }
             }
+
+            // extract forward target did (target that links to the __other__ target)
+            let Some(did) = resolve_active_did(did_id) else {
+                continue;
+            };
 
             // link to be added
             let record_id = RecordId {
                 did,
                 collection: collection.0.clone(),
-                rkey: rkey.0,
+                rkey: rkey.0.clone(),
             };
+            items.push((linker_idx, fwd_target_id, record_id));
+        }
 
-            // pagination:
-            if after_cursor.is_some() {
-                // extract composite-cursor parts
-                let Some((after_did, after_rkey, after_subject)) = &after_cursor else {
-                    continue;
-                };
-
-                let Some(fwd_target_key) = self
+        let mut backward_idx = None;
+        let mut forward_idx = None;
+        let mut items: Vec<_> = items
+            .iter()
+            .filter_map(|(b_idx, fwd_target_id, record)| {
+                let Some(target_key) = self
                     .target_id_table
-                    .get_val_from_id(&self.db, fwd_target.0)?
+                    .get_val_from_id(&self.db, fwd_target_id.0)
+                    .ok()?
                 else {
-                    eprintln!("failed to look up target from target_id {fwd_target:?}");
-                    continue;
+                    eprintln!("failed to look up target from target_id {fwd_target_id:?}");
+                    return None;
                 };
 
-                // first try and  compare by subject only
-                if &fwd_target_key.0 .0 != after_subject
-                    && fwd_target_key.0 .0.cmp(after_subject).is_le()
-                {
-                    continue;
-                }
+                backward_idx = Some(b_idx);
+                forward_idx = Some(fwd_target_id.0 - 1);
 
-                // then, if needed, we compare by record id
-                let cursor_id = RecordId {
-                    did: Did(after_did.clone()),
-                    collection: collection.0.clone(),
-                    rkey: after_rkey.clone(),
-                };
-                if record_id.cmp(&cursor_id).is_le() {
-                    continue;
-                }
-            }
-
-            // pagination, continued
-            let mut should_evict = false;
-            let entry = grouped_links.entry(fwd_target.clone()).or_insert_with(|| {
-                should_evict = page_is_full;
-                Vec::default()
-            });
-            entry.push(record_id);
-
-            if should_evict {
-                grouped_links.pop_last();
-            }
-        }
-
-        let mut items: Vec<(RecordId, String)> = Vec::with_capacity(grouped_links.len());
-        for (fwd_target_id, records) in &grouped_links {
-            let Some(target_key) = self
-                .target_id_table
-                .get_val_from_id(&self.db, fwd_target_id.0)?
-            else {
-                eprintln!("failed to look up target from target_id {fwd_target_id:?}");
-                continue;
-            };
-
-            let target_string = target_key.0 .0;
-
-            records
-                .iter()
-                .for_each(|r| items.push((r.clone(), target_string.clone())));
-        }
+                Some((record.clone(), target_key.0 .0))
+            })
+            .collect();
 
         // Build new cursor from last the item, if needed
         let next = if items.len() as u64 > limit {
             items.truncate(limit as usize);
-            items
-                .last()
-                .map(|item| encode_m2m_cursor(&item.0.did.0, &item.0.rkey, &item.1))
+            items.last().and_then(|_| {
+                Some(b64::URL_SAFE.encode(format!(
+                    "{},{}",
+                    backward_idx?.to_string(),
+                    forward_idx?.to_string()
+                )))
+            })
         } else {
             None
         };
@@ -1645,7 +1662,7 @@ impl DidIdValue {
 }
 
 // target ids
-#[derive(Debug, Clone, Serialize, Deserialize, PartialOrd, Ord, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialOrd, Ord, PartialEq, Eq, Hash)]
 struct TargetId(u64); // key
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
