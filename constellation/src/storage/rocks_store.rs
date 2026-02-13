@@ -1199,12 +1199,9 @@ impl LinkReader for RocksStorage {
             eprintln!("Target not found for {target_key:?}");
             return Ok(PagedOrderedCollection::empty());
         };
-
         let linkers = self.get_target_linkers(&target_id)?;
 
-        eprintln!("linkers: {:#?}", linkers);
-
-        let mut items: Vec<(usize, TargetId, RecordId)> = Vec::new();
+        let mut items: Vec<(usize, usize, RecordId, String)> = Vec::new();
 
         // iterate backwards (who linked to the target?)
         for (linker_idx, (did_id, rkey)) in
@@ -1215,16 +1212,13 @@ impl LinkReader for RocksStorage {
                 })
             })
         {
-            // filter target did
             if did_id.is_empty()
-                || (!filter_did_ids.is_empty() && filter_did_ids.get(&did_id).is_none())
+                || (!filter_did_ids.is_empty() && !filter_did_ids.contains_key(did_id))
             {
                 continue;
             }
 
-            eprintln!("did_did: {:#?}", did_id);
-
-            let Some(targets) = self.get_record_link_targets(&RecordLinkKey(
+            let Some(links) = self.get_record_link_targets(&RecordLinkKey(
                 *did_id,
                 collection.clone(),
                 rkey.clone(),
@@ -1232,94 +1226,74 @@ impl LinkReader for RocksStorage {
             else {
                 continue;
             };
-            let Some(fwd_target_id) =
-                targets
-                    .0
-                    .into_iter()
-                    .find_map(|RecordLinkTarget(rpath, target_id)| {
-                        eprintln!("rpath.0: {} vs. path_to_other: {path_to_other}", rpath.0);
-                        if rpath.0 == path_to_other
-                            && (filter_to_target_ids.is_empty()
-                                || filter_to_target_ids.contains(&target_id))
-                        {
-                            Some(target_id)
-                        } else {
-                            None
-                        }
+
+            // iterate forward (which of these links point to the __other__ target?)
+            for (link_idx, RecordLinkTarget(_, fwd_target_id)) in links
+                .0
+                .into_iter()
+                .enumerate()
+                .filter(|(_, RecordLinkTarget(rpath, target_id))| {
+                    eprintln!("rpath.0: {} vs. path_to_other: {path_to_other}", rpath.0);
+                    rpath.0 == path_to_other
+                        && (filter_to_target_ids.is_empty()
+                            || filter_to_target_ids.contains(target_id))
+                })
+                .skip_while(|(link_idx, _)| {
+                    backward_idx.is_some_and(|bl_idx| {
+                        linker_idx == bl_idx as usize
+                            && forward_idx.is_some_and(|fwd_idx| *link_idx <= fwd_idx as usize)
                     })
-            else {
-                continue;
-            };
-
-            if backward_idx.is_some_and(|bl_idx| {
-                linker_idx == bl_idx as usize
-                    && forward_idx.is_some_and(|fwd_idx| fwd_target_id.0 <= fwd_idx)
-            }) {
-                continue;
-            }
-
-            let page_is_full = items.len() as u64 >= limit;
-
-            eprintln!(
-                "page_is_full: {page_is_full} for items.len(): {}",
-                items.len()
-            );
-
-            if page_is_full {
-                let current_max = items.iter().next_back().unwrap().1;
-                if fwd_target_id > current_max {
+                })
+                .take(limit as usize + 1 - items.len())
+            {
+                // extract forward target did (target that links to the __other__ target)
+                let Some(did) = resolve_active_did(did_id) else {
                     continue;
-                }
-            }
-
-            // extract forward target did (target that links to the __other__ target)
-            let Some(did) = resolve_active_did(did_id) else {
-                continue;
-            };
-
-            // link to be added
-            let record_id = RecordId {
-                did,
-                collection: collection.0.clone(),
-                rkey: rkey.0.clone(),
-            };
-            items.push((linker_idx, fwd_target_id, record_id));
-        }
-
-        let mut backward_idx = None;
-        let mut forward_idx = None;
-        let mut items: Vec<_> = items
-            .iter()
-            .filter_map(|(b_idx, fwd_target_id, record)| {
-                let Some(target_key) = self
+                };
+                // resolve to target string
+                let Some(fwd_target_key) = self
                     .target_id_table
                     .get_val_from_id(&self.db, fwd_target_id.0)
-                    .ok()?
+                    .ok()
+                    .flatten()
                 else {
-                    eprintln!("failed to look up target from target_id {fwd_target_id:?}");
-                    return None;
+                    continue;
                 };
 
-                backward_idx = Some(b_idx);
-                forward_idx = Some(fwd_target_id.0 - 1);
+                // link to be added
+                let record_id = RecordId {
+                    did,
+                    collection: collection.0.clone(),
+                    rkey: rkey.0.clone(),
+                };
+                items.push((linker_idx, link_idx, record_id, fwd_target_key.0 .0));
+            }
 
-                Some((record.clone(), target_key.0 .0))
-            })
-            .collect();
+            // page full - eject
+            if items.len() > limit as usize {
+                break;
+            }
+        }
 
-        // Build new cursor from last the item, if needed
+        // We collect up to limit + 1 fully-resolved items. If we got more than
+        // limit, there are more results beyond this page. We truncate to limit
+        // items (the actual page) and build a composite cursor from the last
+        // item on the page — a base64-encoded pair of (backlink_vec_idx,
+        // forward_link_idx). On the next request, skip_while advances past
+        // this position: backlinks before backlink_vec_idx are skipped entirely,
+        // and at backlink_vec_idx itself, forward links at or before
+        // forward_link_idx are skipped. This correctly resumes mid-record when
+        // a single backlinker has multiple forward links at path_to_other.
         let next = if items.len() as u64 > limit {
             items.truncate(limit as usize);
-            items.last().and_then(|_| {
-                Some(b64::URL_SAFE.encode(format!(
-                    "{},{}",
-                    backward_idx?.to_string(),
-                    forward_idx?.to_string()
-                )))
-            })
+            items
+                .last()
+                .map(|(l, f, _, _)| b64::URL_SAFE.encode(format!("{},{}", *l as u64, *f as u64)))
         } else {
             None
         };
+
+        let items = items.into_iter().map(|(_, _, rid, t)| (rid, t)).collect();
 
         Ok(PagedOrderedCollection { items, next })
     }

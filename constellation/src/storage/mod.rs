@@ -1768,6 +1768,9 @@ mod tests {
     });
 
     test_each_storage!(get_m2m_single, |storage| {
+        // One record linking to a.com (backward), with two forward links at
+        // the same path_to_other (.def.uri) pointing to b.com and c.com.
+        // Both forward targets must appear in the output.
         storage.push(
             &ActionableEvent::CreateLinks {
                 record_id: RecordId {
@@ -1785,36 +1788,36 @@ mod tests {
                         path: ".def.uri".into(),
                     },
                     CollectedLink {
-                        target: Link::Uri("b.com".into()),
-                        path: ".ghi.uri".into(),
+                        target: Link::Uri("c.com".into()),
+                        path: ".def.uri".into(),
                     },
                 ],
             },
             0,
         )?;
+        let result = storage.get_many_to_many(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            10,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
         assert_eq!(
-            storage.get_many_to_many(
-                "a.com",
-                "app.t.c",
-                ".abc.uri",
-                ".def.uri",
-                10,
-                None,
-                &HashSet::new(),
-                &HashSet::new(),
-            )?,
-            PagedOrderedCollection {
-                items: vec![(
-                    RecordId {
-                        did: "did:plc:asdf".into(),
-                        collection: "app.t.c".into(),
-                        rkey: "asdf".into(),
-                    },
-                    "b.com".to_string(),
-                )],
-                next: None,
-            }
+            result.items.len(),
+            2,
+            "both forward links at path_to_other should be emitted"
         );
+        let mut targets: Vec<_> = result.items.iter().map(|(_, t)| t.as_str()).collect();
+        targets.sort();
+        assert_eq!(targets, vec!["b.com", "c.com"]);
+        assert!(result
+            .items
+            .iter()
+            .all(|(r, _)| r.did.0 == "did:plc:asdf" && r.rkey == "asdf"));
+        assert_eq!(result.next, None);
     });
 
     test_each_storage!(get_m2m_filters, |storage| {
@@ -2048,6 +2051,85 @@ mod tests {
             all_rkeys,
             vec!["asdf", "asdf2", "fdsa", "fdsa2"],
             "should have all 4 records across both pages"
+        );
+    });
+
+    // Pagination that splits across forward links within a single backlinker.
+    // The cursor should correctly resume mid-record on the next page.
+    test_each_storage!(get_m2m_paginate_within_forward_links, |storage| {
+        // Record with 1 backward link and 3 forward links at the same path
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:lister".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "list1".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".subject.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("x.com".into()),
+                        path: ".items[].uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("y.com".into()),
+                        path: ".items[].uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("z.com".into()),
+                        path: ".items[].uri".into(),
+                    },
+                ],
+            },
+            0,
+        )?;
+
+        // Page 1: limit=2, should get 2 of the 3 forward links
+        let page1 = storage.get_many_to_many(
+            "a.com",
+            "app.t.c",
+            ".subject.uri",
+            ".items[].uri",
+            2,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(page1.items.len(), 2, "first page should have 2 items");
+        assert!(
+            page1.next.is_some(),
+            "should have a next cursor for remaining item"
+        );
+
+        // Page 2: should get the remaining 1 forward link
+        let page2 = storage.get_many_to_many(
+            "a.com",
+            "app.t.c",
+            ".subject.uri",
+            ".items[].uri",
+            2,
+            page1.next,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(page2.items.len(), 1, "second page should have 1 item");
+        assert_eq!(page2.next, None, "no more pages");
+
+        // Verify all 3 targets appear across pages with no duplicates
+        let mut all_targets: Vec<_> = page1
+            .items
+            .iter()
+            .chain(page2.items.iter())
+            .map(|(_, t)| t.clone())
+            .collect();
+        all_targets.sort();
+        assert_eq!(
+            all_targets,
+            vec!["x.com", "y.com", "z.com"],
+            "all forward targets should appear exactly once across pages"
         );
     });
 }
