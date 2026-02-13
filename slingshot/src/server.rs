@@ -1304,6 +1304,14 @@ fn get_did_doc(domain: &str) -> impl Endpoint + use<> {
     make_sync(move |_| doc.clone())
 }
 
+#[poem::handler]
+async fn https_plz() -> (poem::http::StatusCode, &'static str) {
+    (
+        poem::http::StatusCode::MISDIRECTED_REQUEST,
+        "this service must be accessed with https (port 443).",
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn serve(
     cache: HybridCache<String, CachedRecord>,
@@ -1314,6 +1322,7 @@ pub async fn serve(
     tls_domain: Option<String>,
     tls_certs: Option<PathBuf>,
     tls_ipv6: bool,
+    warn_insecure: bool,
     acme_challenge_redirect: Option<String>,
     acme_contact: Option<String>,
     acme_staging: bool,
@@ -1369,11 +1378,26 @@ pub async fn serve(
             .with(cors);
 
         if let Some(contact) = acme_contact {
-            let (listener, app) = acmify(app, domain, tls_certs, tls_ipv6, contact, acme_staging)?;
+            let (listener, app) = acmify(
+                app,
+                domain,
+                tls_certs,
+                tls_ipv6,
+                contact,
+                acme_staging,
+                warn_insecure,
+            )?;
             run(listener, app, shutdown).await
         } else {
             let certs = tls_certs.expect("certs path must be set for non-acme tls");
-            let (listener, app) = tlsify(app, domain, certs, tls_ipv6, acme_challenge_redirect)?;
+            let (listener, app) = tlsify(
+                app,
+                domain,
+                certs,
+                tls_ipv6,
+                acme_challenge_redirect,
+                warn_insecure,
+            )?;
             run(listener, app, shutdown).await
         }
     } else {
@@ -1388,6 +1412,7 @@ fn acmify(
     tls_ipv6: bool,
     acme_contact: String,
     acme_staging: bool,
+    warn_insecure: bool,
 ) -> Result<(impl Listener + 'static, impl Endpoint + 'static), ServerError> {
     let mut auto_cert = AutoCert::builder()
         .contact(acme_contact)
@@ -1409,9 +1434,16 @@ fn acmify(
 
     let auto_cert = auto_cert.build().map_err(ServerError::AcmeBuildError)?;
 
-    let app = RouteScheme::new()
-        .https(app)
-        .http(auto_cert.http_01_endpoint());
+    let mut insecure_app = Route::new().at(
+        "/.well-known/acme-challenge/:token",
+        auto_cert.http_01_endpoint(),
+    );
+
+    if warn_insecure {
+        insecure_app = insecure_app.at("/*any", https_plz).at("/", https_plz);
+    }
+
+    let app = RouteScheme::new().https(app).http(insecure_app);
 
     let listener = TcpListener::bind(if tls_ipv6 { "[::]:443" } else { "0.0.0.0:443" })
         .acme(auto_cert)
@@ -1430,6 +1462,7 @@ fn tlsify(
     tls_certs: PathBuf,
     tls_ipv6: bool,
     acme_challenge_redirect: Option<String>,
+    warn_insecure: bool,
 ) -> Result<(impl Listener + 'static, impl Endpoint + 'static), ServerError> {
     use poem::listener::{RustlsCertificate, RustlsConfig};
     use std::path::Path;
@@ -1466,14 +1499,6 @@ fn tlsify(
             "0.0.0.0:80"
         }));
 
-    #[poem::handler]
-    async fn https_plz() -> (poem::http::StatusCode, &'static str) {
-        (
-            poem::http::StatusCode::MISDIRECTED_REQUEST,
-            "this service must be accessed with https (port 443).",
-        )
-    }
-
     let app = if let Some(redir) = acme_challenge_redirect {
         use poem::web;
 
@@ -1483,16 +1508,17 @@ fn tlsify(
             web::Redirect::temporary(format!("{redir}{token}"))
         });
 
-        RouteScheme::new().https(app).http(
-            Route::new()
-                .at("/.well-known/acme-challenge/:token", redirect)
-                .at("/*any", https_plz)
-                .at("/", https_plz),
-        )
+        let mut insecure_app = Route::new().at("/.well-known/acme-challenge/:token", redirect);
+
+        if warn_insecure {
+            insecure_app = insecure_app.at("/*any", https_plz).at("/", https_plz);
+        }
+
+        RouteScheme::new().https(app).http(insecure_app)
+    } else if warn_insecure {
+        RouteScheme::new().https(app).http(https_plz)
     } else {
-        RouteScheme::new()
-            .https(app)
-            .http(Route::new().at("/*any", https_plz).at("/", https_plz))
+        RouteScheme::new().https(app)
     };
 
     Ok((listener, app))

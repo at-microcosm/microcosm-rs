@@ -80,6 +80,11 @@ struct Args {
     /// you must also configure the relevant DNS records for this to work
     #[arg(long, action, requires("tls_domain"), env = "SLINGSHOT_TLS_IPV6")]
     tls_ipv6: bool,
+    /// with tls configured on 443, say "please use https" on port 80
+    ///
+    /// note: configuring tls always binds port 80 as well, 443-only is TODO
+    #[arg(long, action, requires("tls_domain"), env = "SLINGSHOT_WARN_INSECURE")]
+    warn_insecure: bool,
     /// redirect acme http-01 challenges to this url
     ///
     /// useful if you're setting up a second instance that synchronizes its
@@ -201,6 +206,7 @@ async fn main() -> Result<(), String> {
             args.tls_domain,
             args.tls_certs,
             args.tls_ipv6,
+            args.warn_insecure,
             args.acme_challenge_redirect,
             args.acme_contact,
             args.acme_staging,
