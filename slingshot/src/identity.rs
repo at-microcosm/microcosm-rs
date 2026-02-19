@@ -746,6 +746,8 @@ impl Identity {
                             );
                         }
                     }
+
+                    self.complete_refresh(&task_key).await?;
                 }
             }
         }
