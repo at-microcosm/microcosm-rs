@@ -725,14 +725,13 @@ fn get_many_to_many(
         return Err(http::StatusCode::BAD_REQUEST);
     }
 
-    let filter_dids: HashSet<Did> = HashSet::from_iter(
-        query
-            .did
-            .iter()
-            .map(|d| d.trim())
-            .filter(|d| !d.is_empty())
-            .map(|d| Did(d.to_string())),
-    );
+    let filter_dids: HashSet<Did> = query
+        .did
+        .iter()
+        .map(|d| d.trim())
+        .filter(|d| !d.is_empty())
+        .map(Did::from)
+        .collect();
 
     let filter_other_subjects: HashSet<String> = HashSet::from_iter(
         query

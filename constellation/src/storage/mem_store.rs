@@ -1,11 +1,10 @@
 use super::{
     LinkReader, LinkStorage, Order, PagedAppendingCollection, PagedOrderedCollection, StorageStats,
 };
+use crate::storage::CompositeCursor;
 use crate::{ActionableEvent, CountsByCount, Did, RecordId};
 
 use anyhow::{anyhow, Result};
-use base64::engine::general_purpose as b64;
-use base64::Engine as _;
 use links::CollectedLink;
 
 use std::collections::{HashMap, HashSet};
@@ -256,18 +255,21 @@ impl LinkReader for MemStorage {
             HashSet::from_iter(filter_targets.iter().map(|s| Target::new(s)));
 
         // extract parts form composite cursor
-        let (backward_idx, forward_idx) = match after {
+        let cursor = match after {
             Some(a) => {
-                let after_str = String::from_utf8(b64::URL_SAFE.decode(a)?)?;
-                let (b, f) = after_str
-                    .split_once(',')
-                    .ok_or_else(|| anyhow!("invalid cursor format"))?;
-                (
-                    (!b.is_empty()).then(|| b.parse::<u64>()).transpose()?,
-                    (!f.is_empty()).then(|| f.parse::<u64>()).transpose()?,
-                )
+                let (b, f) = a.split_once(',').ok_or(anyhow!("invalid cursor format"))?;
+                let b = b
+                    .parse::<u64>()
+                    .map_err(|e| anyhow!("invalid cursor.0: {e}"))?;
+                let f = f
+                    .parse::<u64>()
+                    .map_err(|e| anyhow!("invalid cursor.1: {e}"))?;
+                Some(CompositeCursor {
+                    backward: b,
+                    forward: f,
+                })
             }
-            None => (None, None),
+            None => None,
         };
 
         let data = self.0.lock().unwrap();
@@ -285,12 +287,7 @@ impl LinkReader for MemStorage {
             .iter()
             .enumerate()
             .filter_map(|(i, opt)| opt.as_ref().map(|v| (i, v)))
-            .skip_while(|(linker_idx, _)| {
-                backward_idx.is_some_and(|idx| match forward_idx {
-                    Some(_) => *linker_idx < idx as usize, // inclusive: depend on link idx for skipping
-                    None => *linker_idx <= idx as usize,   // exclusive: skip right here
-                })
-            })
+            .skip_while(|(linker_idx, _)| cursor.is_some_and(|c| *linker_idx < c.backward as usize))
             .filter(|(_, (did, _))| filter_dids.is_empty() || filter_dids.contains(&did))
         {
             let Some(links) = data.links.get(&did).and_then(|m| {
@@ -310,9 +307,8 @@ impl LinkReader for MemStorage {
                     *p == path_to_other && (filter_targets.is_empty() || filter_targets.contains(t))
                 })
                 .skip_while(|(link_idx, _)| {
-                    backward_idx.is_some_and(|bl_idx| {
-                        linker_idx == bl_idx as usize
-                            && forward_idx.is_some_and(|fwd_idx| *link_idx <= fwd_idx as usize)
+                    cursor.is_some_and(|c| {
+                        linker_idx == c.backward as usize && *link_idx <= c.forward as usize
                     })
                 })
                 .take(limit as usize + 1 - items.len())
@@ -335,16 +331,17 @@ impl LinkReader for MemStorage {
             }
         }
 
-        let next = if items.len() as u64 > limit {
-            items.truncate(limit as usize);
-            items
-                .last()
-                .map(|(l, f, _, _)| b64::URL_SAFE.encode(format!("{},{}", *l as u64, *f as u64)))
-        } else {
-            None
-        };
+        let next = (items.len() > limit as usize).then(|| {
+            let (l, f, _, _) = items[limit as usize - 1];
+            format!("{l},{f}")
+        });
 
-        let items = items.into_iter().map(|(_, _, rid, t)| (rid, t)).collect();
+        let items = items
+            .into_iter()
+            .take(limit as usize)
+            .map(|(_, _, rid, t)| (rid, t))
+            .collect();
+
         Ok(PagedOrderedCollection { items, next })
     }
 

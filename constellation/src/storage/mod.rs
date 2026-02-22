@@ -39,6 +39,13 @@ impl<T> PagedAppendingCollection<T> {
     }
 }
 
+// get-many-to-many composite cursor
+#[derive(Copy, Clone, Debug)]
+struct CompositeCursor {
+    backward: u64,
+    forward: u64,
+}
+
 /// A paged collection whose keys are sorted instead of indexed
 ///
 /// this has weaker guarantees than PagedAppendingCollection: it might

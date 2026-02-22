@@ -2,11 +2,10 @@ use super::{
     ActionableEvent, LinkReader, LinkStorage, Order, PagedAppendingCollection,
     PagedOrderedCollection, StorageStats,
 };
+use crate::storage::CompositeCursor;
 use crate::{CountsByCount, Did, RecordId};
 
 use anyhow::{anyhow, bail, Result};
-use base64::engine::general_purpose as b64;
-use base64::Engine as _;
 use bincode::Options as BincodeOptions;
 use links::CollectedLink;
 use metrics::{counter, describe_counter, describe_histogram, histogram, Unit};
@@ -1140,17 +1139,16 @@ impl LinkReader for RocksStorage {
         filter_to_targets: &HashSet<String>,
     ) -> Result<PagedOrderedCollection<(RecordId, String), String>> {
         // helper to resolve dids
-        let resolve_active_did = |did_id: &DidId| -> Option<Did> {
-            let Some(did) = self.did_id_table.get_val_from_id(&self.db, did_id.0).ok()? else {
+        let resolve_active_did = |did_id: &DidId| -> Result<Option<Did>> {
+            let Some(did) = self.did_id_table.get_val_from_id(&self.db, did_id.0)? else {
                 eprintln!("failed to look up did from did_id {did_id:?}");
-                return None;
+                return Ok(None);
             };
-            let Some(DidIdValue(_, active)) = self.did_id_table.get_id_val(&self.db, &did).ok()?
-            else {
+            let Some(DidIdValue(_, active)) = self.did_id_table.get_id_val(&self.db, &did)? else {
                 eprintln!("failed to look up did_value from did_id {did_id:?}: {did:?}: data consistency bug?");
-                return None;
+                return Ok(None);
             };
-            active.then_some(did)
+            Ok(active.then_some(did))
         };
 
         // setup variables that we need later
@@ -1158,26 +1156,24 @@ impl LinkReader for RocksStorage {
         let path = RPath(path.to_string());
 
         // extract parts form composite cursor
-        let (backward_idx, forward_idx) = match after {
+        let cursor = match after {
             Some(a) => {
-                eprintln!("a: {:#?}", a);
-
-                let after_str = String::from_utf8(b64::URL_SAFE.decode(a)?)?;
-
-                eprintln!("after_str: {:#?}", after_str);
-                let (b, f) = after_str
-                    .split_once(',')
-                    .ok_or_else(|| anyhow!("invalid cursor format"))?;
-                (
-                    (!b.is_empty()).then(|| b.parse::<u64>()).transpose()?,
-                    (!f.is_empty()).then(|| f.parse::<u64>()).transpose()?,
-                )
+                let (b, f) = a.split_once(',').ok_or(anyhow!("invalid cursor format"))?;
+                let b = b
+                    .parse::<u64>()
+                    .map_err(|e| anyhow!("invalid cursor.0: {e}"))?;
+                let f = f
+                    .parse::<u64>()
+                    .map_err(|e| anyhow!("invalid cursor.1: {e}"))?;
+                Some(CompositeCursor {
+                    backward: b,
+                    forward: f,
+                })
             }
-            None => (None, None),
+            None => None,
         };
 
-        eprintln!("backward_idx: {:#?}", backward_idx);
-        eprintln!("forward_idx: {:#?}", forward_idx);
+        eprintln!("cursor: {:#?}", cursor);
 
         // (__active__) did ids and filter targets
         let filter_did_ids: HashMap<DidId, bool> = filter_dids
@@ -1206,10 +1202,7 @@ impl LinkReader for RocksStorage {
         // iterate backwards (who linked to the target?)
         for (linker_idx, (did_id, rkey)) in
             linkers.0.iter().enumerate().skip_while(|(linker_idx, _)| {
-                backward_idx.is_some_and(|idx| match forward_idx {
-                    Some(_) => *linker_idx < idx as usize, // inclusive: depend on link idx for skipping
-                    None => *linker_idx <= idx as usize,   // exclusive: skip right here
-                })
+                cursor.is_some_and(|c| *linker_idx < c.backward as usize)
             })
         {
             if did_id.is_empty()
@@ -1239,23 +1232,20 @@ impl LinkReader for RocksStorage {
                             || filter_to_target_ids.contains(target_id))
                 })
                 .skip_while(|(link_idx, _)| {
-                    backward_idx.is_some_and(|bl_idx| {
-                        linker_idx == bl_idx as usize
-                            && forward_idx.is_some_and(|fwd_idx| *link_idx <= fwd_idx as usize)
+                    cursor.is_some_and(|c| {
+                        linker_idx == c.backward as usize && *link_idx <= c.forward as usize
                     })
                 })
                 .take(limit as usize + 1 - items.len())
             {
                 // extract forward target did (target that links to the __other__ target)
-                let Some(did) = resolve_active_did(did_id) else {
+                let Some(did) = resolve_active_did(did_id)? else {
                     continue;
                 };
                 // resolve to target string
                 let Some(fwd_target_key) = self
                     .target_id_table
-                    .get_val_from_id(&self.db, fwd_target_id.0)
-                    .ok()
-                    .flatten()
+                    .get_val_from_id(&self.db, fwd_target_id.0)?
                 else {
                     continue;
                 };
@@ -1284,16 +1274,16 @@ impl LinkReader for RocksStorage {
         // and at backlink_vec_idx itself, forward links at or before
         // forward_link_idx are skipped. This correctly resumes mid-record when
         // a single backlinker has multiple forward links at path_to_other.
-        let next = if items.len() as u64 > limit {
-            items.truncate(limit as usize);
-            items
-                .last()
-                .map(|(l, f, _, _)| b64::URL_SAFE.encode(format!("{},{}", *l as u64, *f as u64)))
-        } else {
-            None
-        };
+        let next = (items.len() > limit as usize).then(|| {
+            let (l, f, _, _) = items[limit as usize - 1];
+            format!("{l},{f}")
+        });
 
-        let items = items.into_iter().map(|(_, _, rid, t)| (rid, t)).collect();
+        let items = items
+            .into_iter()
+            .take(limit as usize)
+            .map(|(_, _, rid, t)| (rid, t))
+            .collect();
 
         Ok(PagedOrderedCollection { items, next })
     }
