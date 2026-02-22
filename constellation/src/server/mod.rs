@@ -626,7 +626,6 @@ struct GetLinkItemsResponse {
     #[serde(skip_serializing)]
     query: GetLinkItemsQuery,
 }
-#[deprecated]
 fn get_links(
     accept: ExtractAccept,
     query: axum_extra::extract::Query<GetLinkItemsQuery>, // supports multiple param occurrences
@@ -840,7 +839,7 @@ fn get_backlink_dids(
     let path = format!(".{path}");
 
     let paged = store
-        .get_distinct_dids(&query.subject, &collection, &path, limit, until)
+        .get_distinct_dids(&query.subject, collection, &path, limit, until)
         .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let cursor = paged.next.map(|next| {
