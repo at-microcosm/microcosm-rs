@@ -1,8 +1,7 @@
 use super::{
-    ActionableEvent, LinkReader, LinkStorage, Order, PagedAppendingCollection,
+    ActionableEvent, LinkReader, LinkStorage, ManyToManyCursor, Order, PagedAppendingCollection,
     PagedOrderedCollection, StorageStats,
 };
-use crate::storage::CompositeCursor;
 use crate::{CountsByCount, Did, RecordId};
 
 use anyhow::{anyhow, bail, Result};
@@ -1165,9 +1164,9 @@ impl LinkReader for RocksStorage {
                 let f = f
                     .parse::<u64>()
                     .map_err(|e| anyhow!("invalid cursor.1: {e}"))?;
-                Some(CompositeCursor {
-                    backward: b,
-                    forward: f,
+                Some(ManyToManyCursor {
+                    backlink: b,
+                    forward_link: f,
                 })
             }
             None => None,
@@ -1202,7 +1201,7 @@ impl LinkReader for RocksStorage {
         // iterate backwards (who linked to the target?)
         for (linker_idx, (did_id, rkey)) in
             linkers.0.iter().enumerate().skip_while(|(linker_idx, _)| {
-                cursor.is_some_and(|c| *linker_idx < c.backward as usize)
+                cursor.is_some_and(|c| *linker_idx < c.backlink as usize)
             })
         {
             if did_id.is_empty()
@@ -1233,7 +1232,7 @@ impl LinkReader for RocksStorage {
                 })
                 .skip_while(|(link_idx, _)| {
                     cursor.is_some_and(|c| {
-                        linker_idx == c.backward as usize && *link_idx <= c.forward as usize
+                        linker_idx == c.backlink as usize && *link_idx <= c.forward_link as usize
                     })
                 })
                 .take(limit as usize + 1 - items.len())

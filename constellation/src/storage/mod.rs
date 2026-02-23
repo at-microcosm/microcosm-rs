@@ -39,11 +39,10 @@ impl<T> PagedAppendingCollection<T> {
     }
 }
 
-// get-many-to-many composite cursor
 #[derive(Copy, Clone, Debug)]
-struct CompositeCursor {
-    backward: u64,
-    forward: u64,
+struct ManyToManyCursor {
+    backlink: u64,
+    forward_link: u64,
 }
 
 /// A paged collection whose keys are sorted instead of indexed

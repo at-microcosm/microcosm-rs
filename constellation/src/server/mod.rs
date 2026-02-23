@@ -709,7 +709,7 @@ struct GetManyToManyItemsQuery {
     #[serde(default = "get_default_cursor_limit")]
     limit: u64,
 }
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize)]
 struct ManyToManyItem {
     link: RecordId,
     subject: String,

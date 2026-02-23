@@ -22,7 +22,7 @@ pub enum ActionableEvent {
     DeleteAccount(Did),
 }
 
-#[derive(Debug, Hash, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize)]
 pub struct Did(pub String);
 
 impl<T: Into<String>> From<T> for Did {
@@ -31,7 +31,7 @@ impl<T: Into<String>> From<T> for Did {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct RecordId {
     pub did: Did,
     pub collection: String,

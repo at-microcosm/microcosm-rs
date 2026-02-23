@@ -1,7 +1,7 @@
 use super::{
-    LinkReader, LinkStorage, Order, PagedAppendingCollection, PagedOrderedCollection, StorageStats,
+    LinkReader, LinkStorage, ManyToManyCursor, Order, PagedAppendingCollection,
+    PagedOrderedCollection, StorageStats,
 };
-use crate::storage::CompositeCursor;
 use crate::{ActionableEvent, CountsByCount, Did, RecordId};
 
 use anyhow::{anyhow, Result};
@@ -264,9 +264,9 @@ impl LinkReader for MemStorage {
                 let f = f
                     .parse::<u64>()
                     .map_err(|e| anyhow!("invalid cursor.1: {e}"))?;
-                Some(CompositeCursor {
-                    backward: b,
-                    forward: f,
+                Some(ManyToManyCursor {
+                    backlink: b,
+                    forward_link: f,
                 })
             }
             None => None,
@@ -287,7 +287,7 @@ impl LinkReader for MemStorage {
             .iter()
             .enumerate()
             .filter_map(|(i, opt)| opt.as_ref().map(|v| (i, v)))
-            .skip_while(|(linker_idx, _)| cursor.is_some_and(|c| *linker_idx < c.backward as usize))
+            .skip_while(|(linker_idx, _)| cursor.is_some_and(|c| *linker_idx < c.backlink as usize))
             .filter(|(_, (did, _))| filter_dids.is_empty() || filter_dids.contains(did))
         {
             let Some(links) = data.links.get(did).and_then(|m| {
@@ -308,7 +308,7 @@ impl LinkReader for MemStorage {
                 })
                 .skip_while(|(link_idx, _)| {
                     cursor.is_some_and(|c| {
-                        linker_idx == c.backward as usize && *link_idx <= c.forward as usize
+                        linker_idx == c.backlink as usize && *link_idx <= c.forward_link as usize
                     })
                 })
                 .take(limit as usize + 1 - items.len())
