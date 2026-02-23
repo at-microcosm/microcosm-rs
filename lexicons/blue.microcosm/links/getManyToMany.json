@@ -4,7 +4,7 @@
 	"defs": {
 		"main": {
 			"type": "query",
-			"description": "Get records that link to a primary subject along with the secondary subjects they also reference",
+			"description": "Get records that link out to both a primary and secondary subject",
 			"parameters": {
 				"type": "params",
 				"required": ["subject", "source", "pathToOther"],
@@ -22,9 +22,9 @@
 						"type": "string",
 						"description": "path to the secondary link in the many-to-many record (e.g., 'otherThing.uri')"
 					},
-					"did": {
+					"linkDid": {
 						"type": "array",
-						"description": "filter links to those from specific users",
+						"description": "filter linking records from specific users",
 						"items": {
 							"type": "string",
 							"format": "did"
@@ -68,13 +68,15 @@
 		},
 		"item": {
 			"type": "object",
-			"required": ["link", "subject"],
+			"required": ["linkRecord", "otherSubject"],
 			"properties": {
-				"link": {
+				"linkRecord": {
 					"type": "ref",
-					"ref": "#linkRecord"
+					"ref": "#linkRecord",
+					"description": "reference to the link record itself"
 				},
-				"subject": {
+				"otherSubject": {
+					"description": "the secondary subject from the link record",
 					"type": "string"
 				}
 			}

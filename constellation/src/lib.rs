@@ -59,6 +59,7 @@ impl RecordId {
 }
 
 #[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct ManyToManyItem {
     link_record: RecordId,
     other_subject: String,
