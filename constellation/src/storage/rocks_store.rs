@@ -2,7 +2,7 @@ use super::{
     ActionableEvent, LinkReader, LinkStorage, ManyToManyCursor, Order, PagedAppendingCollection,
     PagedOrderedCollection, StorageStats,
 };
-use crate::{CountsByCount, Did, RecordId};
+use crate::{CountsByCount, Did, ManyToManyItem, RecordId};
 
 use anyhow::{anyhow, bail, Result};
 use bincode::Options as BincodeOptions;
@@ -1134,7 +1134,7 @@ impl LinkReader for RocksStorage {
         after: Option<String>,
         filter_link_dids: &HashSet<Did>,
         filter_to_targets: &HashSet<String>,
-    ) -> Result<PagedOrderedCollection<(RecordId, String), String>> {
+    ) -> Result<PagedOrderedCollection<ManyToManyItem, String>> {
         // helper to resolve dids
         let resolve_active_did = |did_id: &DidId| -> Result<Option<Did>> {
             let Some(did) = self.did_id_table.get_val_from_id(&self.db, did_id.0)? else {
@@ -1192,9 +1192,9 @@ impl LinkReader for RocksStorage {
         };
         let linkers = self.get_target_linkers(&target_id)?;
 
-        let mut items: Vec<(usize, usize, RecordId, String)> = Vec::new();
+        let mut items: Vec<(usize, usize, ManyToManyItem)> = Vec::new();
 
-        // iterate backwards (who linked to the target?)
+        // iterate backlinks (who linked to the target?)
         for (linker_idx, (did_id, rkey)) in
             linkers.0.iter().enumerate().skip_while(|(linker_idx, _)| {
                 cursor.is_some_and(|c| *linker_idx < c.backlink as usize)
@@ -1215,7 +1215,7 @@ impl LinkReader for RocksStorage {
                 continue;
             };
 
-            // iterate forward (which of these links point to the __other__ target?)
+            // iterate fwd links (which of these links point to the __other__ target?)
             for (link_idx, RecordLinkTarget(_, fwd_target_id)) in links
                 .0
                 .into_iter()
@@ -1250,7 +1250,11 @@ impl LinkReader for RocksStorage {
                     collection: collection.0.clone(),
                     rkey: rkey.0.clone(),
                 };
-                items.push((linker_idx, link_idx, record_id, fwd_target_key.0 .0));
+                let item = ManyToManyItem {
+                    link_record: record_id,
+                    other_subject: fwd_target_key.0 .0,
+                };
+                items.push((linker_idx, link_idx, item));
             }
 
             // page full - eject
@@ -1269,14 +1273,14 @@ impl LinkReader for RocksStorage {
         // forward_link_idx are skipped. This correctly resumes mid-record when
         // a single backlinker has multiple forward links at path_to_other.
         let next = (items.len() > limit as usize).then(|| {
-            let (l, f, _, _) = items[limit as usize - 1];
+            let (l, f, _) = items[limit as usize - 1];
             format!("{l},{f}")
         });
 
         let items = items
             .into_iter()
             .take(limit as usize)
-            .map(|(_, _, rid, t)| (rid, t))
+            .map(|(_, _, item)| item)
             .collect();
 
         Ok(PagedOrderedCollection { items, next })

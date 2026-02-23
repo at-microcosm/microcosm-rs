@@ -19,16 +19,22 @@
 
   <ul>
     <li>See all links to this target at <code>/links/all</code>: <a href="/links/all?target={{ query.subject|urlencode }}">/links/all?target={{ query.subject }}</a></li>
+    {# todo: add link to see many-to-many counts #}
   </ul>
 
   <h3>Many-to-many links, most recent first:</h3>
 
   {% for item in items %}
-    <pre style="display: block; margin: 1em 2em" class="code"><strong>Subject</strong>:    <a href="/links/all?target={{ item.subject|urlencode }}">{{ item.subject }}</a>
-<strong>DID</strong>:        {{ item.link.did().0 }}
-<strong>Collection</strong>: {{ item.link.collection }}
-<strong>RKey</strong>:       {{ item.link.rkey }}
--> <a href="https://pdsls.dev/at://{{ item.link.did().0 }}/{{ item.link.collection }}/{{ item.link.rkey }}">browse record</a></pre>
+<pre style="display: block; margin: 1em 2em" class="code"><strong>Linking record</strong>:
+    {%- if let Some(uri) = item.link_record.uri().as_str()|to_browseable %} <a href="{{ uri }}">browse link record</a>{% endif %}
+  DID:         {{ item.link_record.did().0 }}
+  Collection:  {{ item.link_record.collection() }}
+  RKey:        {{ item.link_record.rkey() }}
+<strong>Other subject</strong>: {{ item.other_subject }}
+  {%- if let Some(uri) = item.other_subject.as_str()|to_browseable %}
+  -> <a href="{{ uri }}">browse subject</a>
+  {%- endif %}
+</pre>
   {% endfor %}
 
   {% if let Some(c) = cursor %}

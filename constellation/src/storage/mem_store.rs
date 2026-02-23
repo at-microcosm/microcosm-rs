@@ -2,7 +2,7 @@ use super::{
     LinkReader, LinkStorage, ManyToManyCursor, Order, PagedAppendingCollection,
     PagedOrderedCollection, StorageStats,
 };
-use crate::{ActionableEvent, CountsByCount, Did, RecordId};
+use crate::{ActionableEvent, CountsByCount, Did, ManyToManyItem, RecordId};
 
 use anyhow::{anyhow, Result};
 use links::CollectedLink;
@@ -248,7 +248,7 @@ impl LinkReader for MemStorage {
         after: Option<String>,
         filter_dids: &HashSet<Did>,
         filter_targets: &HashSet<String>,
-    ) -> Result<PagedOrderedCollection<(RecordId, String), String>> {
+    ) -> Result<PagedOrderedCollection<ManyToManyItem, String>> {
         // setup variables that we need later
         let path_to_other = RecordPath(path_to_other.to_string());
         let filter_targets: HashSet<Target> =
@@ -280,7 +280,7 @@ impl LinkReader for MemStorage {
             return Ok(PagedOrderedCollection::empty());
         };
 
-        let mut items: Vec<(usize, usize, RecordId, String)> = Vec::new();
+        let mut items: Vec<(usize, usize, ManyToManyItem)> = Vec::new();
 
         // iterate backwards (who linked to the target?)
         for (linker_idx, (did, rkey)) in linkers
@@ -313,16 +313,15 @@ impl LinkReader for MemStorage {
                 })
                 .take(limit as usize + 1 - items.len())
             {
-                items.push((
-                    linker_idx,
-                    link_idx,
-                    RecordId {
+                let item = ManyToManyItem {
+                    link_record: RecordId {
                         did: did.clone(),
                         collection: collection.to_string(),
                         rkey: rkey.0.clone(),
                     },
-                    fwd_target.0.clone(),
-                ));
+                    other_subject: fwd_target.0.clone(),
+                };
+                items.push((linker_idx, link_idx, item));
             }
 
             // page full - eject
@@ -332,14 +331,14 @@ impl LinkReader for MemStorage {
         }
 
         let next = (items.len() > limit as usize).then(|| {
-            let (l, f, _, _) = items[limit as usize - 1];
+            let (l, f, _) = items[limit as usize - 1];
             format!("{l},{f}")
         });
 
         let items = items
             .into_iter()
             .take(limit as usize)
-            .map(|(_, _, rid, t)| (rid, t))
+            .map(|(_, _, item)| item)
             .collect();
 
         Ok(PagedOrderedCollection { items, next })

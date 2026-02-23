@@ -1,4 +1,4 @@
-use crate::{ActionableEvent, CountsByCount, Did, RecordId};
+use crate::{ActionableEvent, CountsByCount, Did, ManyToManyItem, RecordId};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -152,7 +152,7 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
         after: Option<String>,
         filter_dids: &HashSet<Did>,
         filter_to_targets: &HashSet<String>,
-    ) -> Result<PagedOrderedCollection<(RecordId, String), String>>;
+    ) -> Result<PagedOrderedCollection<ManyToManyItem, String>>;
 
     fn get_all_counts(
         &self,
@@ -1817,13 +1817,17 @@ mod tests {
             2,
             "both forward links at path_to_other should be emitted"
         );
-        let mut targets: Vec<_> = result.items.iter().map(|(_, t)| t.as_str()).collect();
+        let mut targets: Vec<_> = result
+            .items
+            .iter()
+            .map(|item| item.other_subject.as_str())
+            .collect();
         targets.sort();
         assert_eq!(targets, vec!["b.com", "c.com"]);
         assert!(result
             .items
             .iter()
-            .all(|(r, _)| r.did.0 == "did:plc:asdf" && r.rkey == "asdf"));
+            .all(|item| item.link_record.uri() == "at://did:plc:asdf/app.t.c/asdf"));
         assert_eq!(result.next, None);
     });
 
@@ -1926,28 +1930,28 @@ mod tests {
         let b_items: Vec<_> = result
             .items
             .iter()
-            .filter(|(_, subject)| subject == "b.com")
+            .filter(|item| item.other_subject == "b.com")
             .collect();
         assert_eq!(b_items.len(), 2);
-        assert!(b_items
-            .iter()
-            .any(|(r, _)| r.did.0 == "did:plc:asdf" && r.rkey == "asdf"));
-        assert!(b_items
-            .iter()
-            .any(|(r, _)| r.did.0 == "did:plc:asdf" && r.rkey == "asdf2"));
+        assert!(b_items.iter().any(
+            |item| item.link_record.did.0 == "did:plc:asdf" && item.link_record.rkey == "asdf"
+        ));
+        assert!(b_items.iter().any(
+            |item| item.link_record.did.0 == "did:plc:asdf" && item.link_record.rkey == "asdf2"
+        ));
         // Check c.com items
         let c_items: Vec<_> = result
             .items
             .iter()
-            .filter(|(_, subject)| subject == "c.com")
+            .filter(|item| item.other_subject == "c.com")
             .collect();
         assert_eq!(c_items.len(), 2);
-        assert!(c_items
-            .iter()
-            .any(|(r, _)| r.did.0 == "did:plc:fdsa" && r.rkey == "fdsa"));
-        assert!(c_items
-            .iter()
-            .any(|(r, _)| r.did.0 == "did:plc:fdsa" && r.rkey == "fdsa2"));
+        assert!(c_items.iter().any(
+            |item| item.link_record.did.0 == "did:plc:fdsa" && item.link_record.rkey == "fdsa"
+        ));
+        assert!(c_items.iter().any(
+            |item| item.link_record.did.0 == "did:plc:fdsa" && item.link_record.rkey == "fdsa2"
+        ));
 
         // Test with DID filter - should only get records from did:plc:fdsa
         let result = storage.get_many_to_many(
@@ -1961,8 +1965,14 @@ mod tests {
             &HashSet::new(),
         )?;
         assert_eq!(result.items.len(), 2);
-        assert!(result.items.iter().all(|(_, subject)| subject == "c.com"));
-        assert!(result.items.iter().all(|(r, _)| r.did.0 == "did:plc:fdsa"));
+        assert!(result
+            .items
+            .iter()
+            .all(|item| item.other_subject == "c.com"));
+        assert!(result
+            .items
+            .iter()
+            .all(|item| item.link_record.did.0 == "did:plc:fdsa"));
 
         // Test with target filter - should only get records linking to b.com
         let result = storage.get_many_to_many(
@@ -1976,8 +1986,14 @@ mod tests {
             &HashSet::from_iter(["b.com".to_string()]),
         )?;
         assert_eq!(result.items.len(), 2);
-        assert!(result.items.iter().all(|(_, subject)| subject == "b.com"));
-        assert!(result.items.iter().all(|(r, _)| r.did.0 == "did:plc:asdf"));
+        assert!(result
+            .items
+            .iter()
+            .all(|item| item.other_subject == "b.com"));
+        assert!(result
+            .items
+            .iter()
+            .all(|item| item.link_record.did.0 == "did:plc:asdf"));
 
         // Pagination edge cases: we have 4 flat items
 
@@ -2051,8 +2067,17 @@ mod tests {
         assert_eq!(result2.next, None, "next should be None on final page");
 
         // Verify we got all 4 unique items across both pages (no duplicates, no gaps)
-        let mut all_rkeys: Vec<_> = result.items.iter().map(|(r, _)| r.rkey.clone()).collect();
-        all_rkeys.extend(result2.items.iter().map(|(r, _)| r.rkey.clone()));
+        let mut all_rkeys: Vec<_> = result
+            .items
+            .iter()
+            .map(|item| item.link_record.rkey.clone())
+            .collect();
+        all_rkeys.extend(
+            result2
+                .items
+                .iter()
+                .map(|item| item.link_record.rkey.clone()),
+        );
         all_rkeys.sort();
         assert_eq!(
             all_rkeys,
@@ -2130,7 +2155,7 @@ mod tests {
             .items
             .iter()
             .chain(page2.items.iter())
-            .map(|(_, t)| t.clone())
+            .map(|item| item.other_subject.clone())
             .collect();
         all_targets.sort();
         assert_eq!(

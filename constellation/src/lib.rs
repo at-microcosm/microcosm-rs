@@ -48,6 +48,20 @@ impl RecordId {
     pub fn rkey(&self) -> String {
         self.rkey.clone()
     }
+    pub fn uri(&self) -> String {
+        let RecordId {
+            did: Did(did),
+            collection,
+            rkey,
+        } = self;
+        format!("at://{did}/{collection}/{rkey}")
+    }
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+pub struct ManyToManyItem {
+    link_record: RecordId,
+    other_subject: String,
 }
 
 /// maybe the worst type in this repo, and there are some bad types

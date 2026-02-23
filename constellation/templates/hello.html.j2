@@ -98,7 +98,14 @@
   </ul>
 
   <p style="margin-bottom: 0"><strong>Try it:</strong></p>
-  {% call try_it::get_many_to_many("at://did:plc:a4pqq234yw7fqbddawjo7y35/app.bsky.feed.post/3m237ilwc372e", "app.bsky.feed.like:subject.uri", "reply.parent.uri", [""], [""], 16) %}
+  {% call try_it::get_many_to_many(
+    "at://did:plc:uyauirpjzk6le4ygqzatcwnq/app.bsky.graph.list/3lzhg33t5bf2h",
+    "app.bsky.graph.listitem:list",
+    "subject",
+    [""],
+    [""],
+    16,
+  ) %}
 
   <h3 class="route"><code>GET /xrpc/blue.microcosm.links.getDistinct</code></h3>
 
