@@ -1060,7 +1060,7 @@ impl LinkReader for RocksStorage {
             // if we have a full page, and we're inserting a *new* key less than
             // the current max, then we can evict the current max
             let mut should_evict = false;
-            let entry = grouped_counts.entry(fwd_target.clone()).or_insert_with(|| {
+            let entry = grouped_counts.entry(fwd_target).or_insert_with(|| {
                 // this is a *new* key, so kick the max if we're full
                 should_evict = page_is_full;
                 Default::default()

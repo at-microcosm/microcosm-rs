@@ -142,6 +142,7 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
     fn get_all_record_counts(&self, _target: &str)
         -> Result<HashMap<String, HashMap<String, u64>>>;
 
+    #[allow(clippy::too_many_arguments)]
     fn get_many_to_many(
         &self,
         target: &str,

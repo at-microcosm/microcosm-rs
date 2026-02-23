@@ -288,9 +288,9 @@ impl LinkReader for MemStorage {
             .enumerate()
             .filter_map(|(i, opt)| opt.as_ref().map(|v| (i, v)))
             .skip_while(|(linker_idx, _)| cursor.is_some_and(|c| *linker_idx < c.backward as usize))
-            .filter(|(_, (did, _))| filter_dids.is_empty() || filter_dids.contains(&did))
+            .filter(|(_, (did, _))| filter_dids.is_empty() || filter_dids.contains(did))
         {
-            let Some(links) = data.links.get(&did).and_then(|m| {
+            let Some(links) = data.links.get(did).and_then(|m| {
                 m.get(&RepoId {
                     collection: collection.to_string(),
                     rkey: rkey.clone(),
