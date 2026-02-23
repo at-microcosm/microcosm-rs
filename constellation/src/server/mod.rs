@@ -797,7 +797,7 @@ fn get_many_to_many(
 }
 
 #[derive(Clone, Deserialize)]
-struct GetDistinctItemsQuery {
+struct GetBacklinkDidsQuery {
     subject: String,
     source: String,
     cursor: Option<OpaqueApiCursor>,
@@ -855,7 +855,6 @@ fn get_backlink_dids(
         GetBacklinkDidsResponse {
             total: paged.total,
             linking_dids: paged.items,
->>>>>>> 7a3e36b (Add getDistinct XRPC equivalent to REST /links/distinct-dids)
             cursor,
             query: (*query).clone(),
         },
