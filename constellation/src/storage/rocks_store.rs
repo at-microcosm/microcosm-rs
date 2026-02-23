@@ -945,7 +945,7 @@ impl LinkReader for RocksStorage {
         path_to_other: &str,
         limit: u64,
         after: Option<String>,
-        filter_dids: &HashSet<Did>,
+        filter_link_dids: &HashSet<Did>,
         filter_to_targets: &HashSet<String>,
     ) -> Result<PagedOrderedCollection<(String, u64, u64), String>> {
         let collection = Collection(collection.to_string());
@@ -965,7 +965,7 @@ impl LinkReader for RocksStorage {
             return Ok(PagedOrderedCollection::empty());
         };
 
-        let filter_did_ids: HashMap<DidId, bool> = filter_dids
+        let filter_did_ids: HashMap<DidId, bool> = filter_link_dids
             .iter()
             .filter_map(|did| self.did_id_table.get_id_val(&self.db, did).transpose())
             .collect::<Result<Vec<DidIdValue>>>()?
@@ -1134,7 +1134,7 @@ impl LinkReader for RocksStorage {
         path_to_other: &str,
         limit: u64,
         after: Option<String>,
-        filter_dids: &HashSet<Did>,
+        filter_link_dids: &HashSet<Did>,
         filter_to_targets: &HashSet<String>,
     ) -> Result<PagedOrderedCollection<(RecordId, String), String>> {
         // helper to resolve dids
@@ -1175,7 +1175,7 @@ impl LinkReader for RocksStorage {
         eprintln!("cursor: {:#?}", cursor);
 
         // (__active__) did ids and filter targets
-        let filter_did_ids: HashMap<DidId, bool> = filter_dids
+        let filter_did_ids: HashMap<DidId, bool> = filter_link_dids
             .iter()
             .filter_map(|did| self.did_id_table.get_id_val(&self.db, did).transpose())
             .collect::<Result<Vec<DidIdValue>>>()?

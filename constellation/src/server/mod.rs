@@ -292,6 +292,9 @@ struct GetManyToManyCountsQuery {
     /// path to the secondary link in the linking record
     path_to_other: String,
     /// filter to linking records (join of the m2m) by these DIDs
+    ///
+    /// TODO: this should be called `link_did`, deprecate + add an alias
+    /// TODO: should we have an `other_did` filter as well?
     #[serde(default)]
     did: Vec<String>,
     /// filter to specific secondary records
@@ -700,8 +703,10 @@ struct GetManyToManyItemsQuery {
     /// path to the secondary link in the linking record
     path_to_other: String,
     /// filter to linking records (join of the m2m) by these DIDs
+    ///
+    /// TODO: should we have an `other_did` filter as well?
     #[serde(default)]
-    did: Vec<String>,
+    link_did: Vec<String>,
     /// filter to specific secondary records
     #[serde(default)]
     other_subject: Vec<String>,
@@ -740,7 +745,7 @@ fn get_many_to_many(
     }
 
     let filter_dids: HashSet<Did> = query
-        .did
+        .link_did
         .iter()
         .map(|d| d.trim())
         .filter(|d| !d.is_empty())

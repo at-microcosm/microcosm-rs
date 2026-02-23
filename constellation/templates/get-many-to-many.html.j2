@@ -6,7 +6,7 @@
 
 {% block content %}
 
-  {% call try_it::get_many_to_many(query.subject, query.source, query.path_to_other, query.did, query.other_subject, query.limit) %}
+  {% call try_it::get_many_to_many(query.subject, query.source, query.path_to_other, query.link_did, query.other_subject, query.limit) %}
 
   <h2>
     Many-to-many links to <code>{{ query.subject }}</code>
@@ -36,7 +36,7 @@
       <input type="hidden" name="subject" value="{{ query.subject }}" />
       <input type="hidden" name="source" value="{{ query.source }}" />
       <input type="hidden" name="pathToOther" value="{{ query.path_to_other }}" />
-      {% for did in query.did %}
+      {% for did in query.link_did %}
         <input type="hidden" name="did" value="{{ did }}" />
       {% endfor %}
       {% for other in query.other_subject %}
