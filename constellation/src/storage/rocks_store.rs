@@ -961,7 +961,6 @@ impl LinkReader for RocksStorage {
         let after = after.map(|s| s.parse::<u64>().map(TargetId)).transpose()?;
 
         let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? else {
-            eprintln!("nothin doin for this target, {target_key:?}");
             return Ok(PagedOrderedCollection::empty());
         };
 
@@ -1022,7 +1021,6 @@ impl LinkReader for RocksStorage {
                 .take(1)
                 .next()
             else {
-                eprintln!("no forward match");
                 continue;
             };
 
@@ -1172,8 +1170,6 @@ impl LinkReader for RocksStorage {
             None => None,
         };
 
-        eprintln!("cursor: {:#?}", cursor);
-
         // (__active__) did ids and filter targets
         let filter_did_ids: HashMap<DidId, bool> = filter_link_dids
             .iter()
@@ -1225,7 +1221,6 @@ impl LinkReader for RocksStorage {
                 .into_iter()
                 .enumerate()
                 .filter(|(_, RecordLinkTarget(rpath, target_id))| {
-                    eprintln!("rpath.0: {} vs. path_to_other: {path_to_other}", rpath.0);
                     rpath.0 == path_to_other
                         && (filter_to_target_ids.is_empty()
                             || filter_to_target_ids.contains(target_id))
