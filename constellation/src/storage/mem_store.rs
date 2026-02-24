@@ -257,16 +257,16 @@ impl LinkReader for MemStorage {
         // extract parts form composite cursor
         let cursor = match after {
             Some(a) => {
-                let (b, f) = a.split_once(',').ok_or(anyhow!("invalid cursor format"))?;
-                let b = b
+                let (b, o) = a.split_once(',').ok_or(anyhow!("invalid cursor format"))?;
+                let backlink_idx = b
                     .parse::<u64>()
                     .map_err(|e| anyhow!("invalid cursor.0: {e}"))?;
-                let f = f
+                let other_link_idx = o
                     .parse::<u64>()
                     .map_err(|e| anyhow!("invalid cursor.1: {e}"))?;
                 Some(ManyToManyCursor {
-                    backlink: b,
-                    forward_link: f,
+                    backlink_idx,
+                    other_link_idx,
                 })
             }
             None => None,
@@ -283,11 +283,13 @@ impl LinkReader for MemStorage {
         let mut items: Vec<(usize, usize, ManyToManyItem)> = Vec::new();
 
         // iterate backwards (who linked to the target?)
-        for (linker_idx, (did, rkey)) in linkers
+        for (backlink_idx, (did, rkey)) in linkers
             .iter()
             .enumerate()
             .filter_map(|(i, opt)| opt.as_ref().map(|v| (i, v)))
-            .skip_while(|(linker_idx, _)| cursor.is_some_and(|c| *linker_idx < c.backlink as usize))
+            .skip_while(|(backlink_idx, _)| {
+                cursor.is_some_and(|c| *backlink_idx < c.backlink_idx as usize)
+            })
             .filter(|(_, (did, _))| filter_dids.is_empty() || filter_dids.contains(did))
         {
             let Some(links) = data.links.get(did).and_then(|m| {
@@ -299,16 +301,17 @@ impl LinkReader for MemStorage {
                 continue;
             };
 
-            // iterate forward (which of these links point to the __other__ target?)
-            for (link_idx, (_, fwd_target)) in links
+            // iterate forward (which of these links point to the "other" target?)
+            for (other_link_idx, (_, fwd_target)) in links
                 .iter()
                 .enumerate()
                 .filter(|(_, (p, t))| {
                     *p == path_to_other && (filter_targets.is_empty() || filter_targets.contains(t))
                 })
-                .skip_while(|(link_idx, _)| {
+                .skip_while(|(other_link_idx, _)| {
                     cursor.is_some_and(|c| {
-                        linker_idx == c.backlink as usize && *link_idx <= c.forward_link as usize
+                        backlink_idx == c.backlink_idx as usize
+                            && *other_link_idx <= c.other_link_idx as usize
                     })
                 })
                 .take(limit as usize + 1 - items.len())
@@ -321,7 +324,7 @@ impl LinkReader for MemStorage {
                     },
                     other_subject: fwd_target.0.clone(),
                 };
-                items.push((linker_idx, link_idx, item));
+                items.push((backlink_idx, other_link_idx, item));
             }
 
             // page full - eject
@@ -331,8 +334,8 @@ impl LinkReader for MemStorage {
         }
 
         let next = (items.len() > limit as usize).then(|| {
-            let (l, f, _) = items[limit as usize - 1];
-            format!("{l},{f}")
+            let (b, o, _) = items[limit as usize - 1];
+            format!("{b},{o}")
         });
 
         let items = items

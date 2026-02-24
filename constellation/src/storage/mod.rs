@@ -41,8 +41,8 @@ impl<T> PagedAppendingCollection<T> {
 
 #[derive(Copy, Clone, Debug)]
 struct ManyToManyCursor {
-    backlink: u64,
-    forward_link: u64,
+    backlink_idx: u64,
+    other_link_idx: u64,
 }
 
 /// A paged collection whose keys are sorted instead of indexed

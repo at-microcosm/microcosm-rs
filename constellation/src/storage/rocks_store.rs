@@ -1156,15 +1156,15 @@ impl LinkReader for RocksStorage {
         let cursor = match after {
             Some(a) => {
                 let (b, f) = a.split_once(',').ok_or(anyhow!("invalid cursor format"))?;
-                let b = b
+                let backlink_idx = b
                     .parse::<u64>()
                     .map_err(|e| anyhow!("invalid cursor.0: {e}"))?;
-                let f = f
+                let other_link_idx = f
                     .parse::<u64>()
                     .map_err(|e| anyhow!("invalid cursor.1: {e}"))?;
                 Some(ManyToManyCursor {
-                    backlink: b,
-                    forward_link: f,
+                    backlink_idx,
+                    other_link_idx,
                 })
             }
             None => None,
@@ -1195,10 +1195,14 @@ impl LinkReader for RocksStorage {
         let mut items: Vec<(usize, usize, ManyToManyItem)> = Vec::new();
 
         // iterate backlinks (who linked to the target?)
-        for (linker_idx, (did_id, rkey)) in
-            linkers.0.iter().enumerate().skip_while(|(linker_idx, _)| {
-                cursor.is_some_and(|c| *linker_idx < c.backlink as usize)
-            })
+        for (backlink_idx, (did_id, rkey)) in
+            linkers
+                .0
+                .iter()
+                .enumerate()
+                .skip_while(|(backlink_idx, _)| {
+                    cursor.is_some_and(|c| *backlink_idx < c.backlink_idx as usize)
+                })
         {
             if did_id.is_empty()
                 || (!filter_did_ids.is_empty() && !filter_did_ids.contains_key(did_id))
@@ -1215,8 +1219,8 @@ impl LinkReader for RocksStorage {
                 continue;
             };
 
-            // iterate fwd links (which of these links point to the __other__ target?)
-            for (link_idx, RecordLinkTarget(_, fwd_target_id)) in links
+            // iterate fwd links (which of these links point to the "other" target?)
+            for (other_link_idx, RecordLinkTarget(_, fwd_target_id)) in links
                 .0
                 .into_iter()
                 .enumerate()
@@ -1225,9 +1229,10 @@ impl LinkReader for RocksStorage {
                         && (filter_to_target_ids.is_empty()
                             || filter_to_target_ids.contains(target_id))
                 })
-                .skip_while(|(link_idx, _)| {
+                .skip_while(|(other_link_idx, _)| {
                     cursor.is_some_and(|c| {
-                        linker_idx == c.backlink as usize && *link_idx <= c.forward_link as usize
+                        backlink_idx == c.backlink_idx as usize
+                            && *other_link_idx <= c.other_link_idx as usize
                     })
                 })
                 .take(limit as usize + 1 - items.len())
@@ -1254,7 +1259,7 @@ impl LinkReader for RocksStorage {
                     link_record: record_id,
                     other_subject: fwd_target_key.0 .0,
                 };
-                items.push((linker_idx, link_idx, item));
+                items.push((backlink_idx, other_link_idx, item));
             }
 
             // page full - eject
@@ -1273,8 +1278,8 @@ impl LinkReader for RocksStorage {
         // forward_link_idx are skipped. This correctly resumes mid-record when
         // a single backlinker has multiple forward links at path_to_other.
         let next = (items.len() > limit as usize).then(|| {
-            let (l, f, _) = items[limit as usize - 1];
-            format!("{l},{f}")
+            let (b, o, _) = items[limit as usize - 1];
+            format!("{b},{o}")
         });
 
         let items = items
