@@ -58,9 +58,21 @@ fn rocks_opts_base() -> Options {
     let mut opts = Options::default();
     opts.set_level_compaction_dynamic_level_bytes(true);
     opts.create_if_missing(true);
+
+    let mut bopts = rocksdb::BlockBasedOptions::default();
+    bopts.set_cache_index_and_filter_blocks(true);
+    bopts.set_pin_l0_filter_and_index_blocks_in_cache(true);
+    bopts.set_bloom_filter(10.0, false);
+    bopts.set_checksum_type(rocksdb::ChecksumType::XXH3);
+    opts.set_block_based_table_factory(&bopts);
+
+    opts.set_min_level_to_compress(1);
     opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
-    opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd); // this probably doesn't work because it hasn't been enabled
-                                                                            // TODO: actually enable the bottommost compression. but after other changes run for a bit in case zstd is cpu- or mem-expensive.
+
+    // TODO: this probably doesn't work because it hasn't been enabled
+    // actually enable the bottommost compression. but after other changes run for a bit in case zstd is cpu- or mem-expensive.
+    opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
+
     opts
 }
 fn get_db_opts() -> Options {
@@ -68,6 +80,16 @@ fn get_db_opts() -> Options {
     opts.create_missing_column_families(true);
     opts.increase_parallelism(4); // todo: make configurable if anyone else actually runs a different instance. start at # of cores
                                   // consider doing optimize_level_style_compaction or optimize_universal_style_compaction
+
+    let mut bopts = rocksdb::BlockBasedOptions::default();
+
+    // TODO: maybe make this a configuration
+    // TODO: somewhere between 10 - 25% of RAM is probably a good start
+    let cache = rocksdb::Cache::new_lru_cache(/* 2 GB */ 2_000_000_000);
+    bopts.set_block_cache(&cache);
+
+    opts.set_block_based_table_factory(&bopts);
+
     opts
 }
 fn get_db_read_opts() -> Options {
@@ -280,10 +302,20 @@ impl RocksStorage {
             // the reverse links:
             ColumnFamilyDescriptor::new(TARGET_LINKERS_CF, {
                 let mut opts = rocks_opts_base();
+
                 opts.set_merge_operator_associative(
                     "merge_op_extend_did_ids",
                     Self::merge_op_extend_did_ids,
                 );
+
+                let mut bopts = rocksdb::BlockBasedOptions::default();
+                // bopts.set_block_size(/* 16 KiB */ 16 * 1_024);
+                bopts.set_pin_top_level_index_and_filter(true);
+                bopts.set_index_type(rocksdb::BlockBasedIndexType::TwoLevelIndexSearch);
+                bopts.set_partition_filters(true);
+
+                opts.set_block_based_table_factory(&bopts);
+
                 opts
             }),
             // unfortunately we also need forward links to handle deletes
