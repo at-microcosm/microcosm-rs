@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use poem::{
     Endpoint, EndpointExt, IntoResponse, Route, RouteScheme, Server,
     endpoint::{StaticFileEndpoint, make_sync},
-    http::Method,
+    http::{Method, StatusCode},
     listener::{
         Listener, TcpListener,
         acme::{AutoCert, ChallengeType, LETS_ENCRYPT_PRODUCTION, LETS_ENCRYPT_STAGING},
@@ -1305,9 +1305,9 @@ fn get_did_doc(domain: &str) -> impl Endpoint + use<> {
 }
 
 #[poem::handler]
-async fn https_plz() -> (poem::http::StatusCode, &'static str) {
+async fn https_plz() -> (StatusCode, &'static str) {
     (
-        poem::http::StatusCode::MISDIRECTED_REQUEST,
+        StatusCode::MISDIRECTED_REQUEST,
         "this service must be accessed with https (port 443).",
     )
 }
@@ -1543,15 +1543,46 @@ where
 }
 
 async fn request_counter<E: Endpoint>(next: E, req: poem::Request) -> poem::Result<poem::Response> {
-    let t0 = std::time::Instant::now();
+    // extract request details before we lose access
     let method = req.method().to_string();
     let path = req.uri().path().to_string();
+    let h = req.headers();
+    let ua = match h.get("user-agent").and_then(|v| v.to_str().ok()) {
+        None => "[no ua]".to_string(),
+        Some(ua) if ua.starts_with("Mozilla/") => "[browser-y]".to_string(),
+        Some(ua) => format!("ua:{ua}"),
+    };
+    let origin = h
+        .get("origin")
+        .and_then(|v| v.to_str().ok())
+        .map(|o| format!("origin:{o}"))
+        .unwrap_or("[no origin]".to_string());
+
+    // actually forward the request down
+    let t0 = std::time::Instant::now();
     let res = next.call(req).await?.into_response();
+    let dt = t0.elapsed();
+
+    // grab remaining details
+    let status = res.status();
+    let path = match status {
+        StatusCode::MISDIRECTED_REQUEST => "[rejected http]",
+        StatusCode::NOT_FOUND => "[not found]",
+        _ => &path,
+    };
     metrics::histogram!(
         "server_request",
         "endpoint" => format!("{method} {path}"),
-        "status" => res.status().to_string(),
+        "status" => status.as_str().to_string(), // just the number
     )
-    .record(t0.elapsed());
+    .record(dt);
+
+    metrics::counter!(
+        "server_request_source",
+        "ua" => ua,
+        "origin" => origin,
+    )
+    .increment(1);
+
     Ok(res)
 }

@@ -17,6 +17,7 @@ jetstream = { path = "../jetstream", features = ["metrics"] }
 links = { path = "../links" }
 log = "0.4.27"
 metrics = "0.24.2"
+metrics-util = "0.20.1"
 metrics-exporter-prometheus = { version = "0.17.1", features = ["http-listener"] }
 poem = { git = "https://github.com/uniphil/poem.git", branch = "acme/issue-async", features = ["acme", "static-files"] }
 poem-openapi = { git = "https://github.com/uniphil/poem.git", branch = "acme/issue-async", features = ["scalar"] }

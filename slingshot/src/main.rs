@@ -278,9 +278,16 @@ fn install_metrics_server(
 ) -> Result<(), metrics_exporter_prometheus::BuildError> {
     log::info!("installing metrics server...");
     PrometheusBuilder::new()
-        .set_buckets(&[0.001, 0.006, 0.036, 0.216, 1.296, 7.776, 45.656])?
+        .set_buckets(&[
+            0.025, 0.045, 0.080, 0.144, 0.259, 0.465, 0.833, 1.495, 2.682, 4.812, 8.633, 15.488,
+            27.785,
+        ])?
         .set_bucket_duration(std::time::Duration::from_secs(15))?
         .set_bucket_count(std::num::NonZero::new(4).unwrap()) // count * duration = bucket lifetime
+        .idle_timeout(
+            metrics_util::MetricKindMask::ALL,
+            Some(std::time::Duration::from_secs(300)),
+        )
         .set_enable_unit_suffix(false) // this seemed buggy for constellation (sometimes wouldn't engage)
         .with_http_listener(bind_metrics)
         .install()?;
