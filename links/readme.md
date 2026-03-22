@@ -1,6 +1,8 @@
-# quasar
+## links
 
-indexed replay and fan-out for event stream services (wip)
+shared link-extraction logic
+
+(desperately needed: finally write up a mini-spec kinda thing for how the link syntax works)
 
 
 ## license

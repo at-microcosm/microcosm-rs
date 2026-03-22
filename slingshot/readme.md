@@ -39,3 +39,10 @@ RUST_BACKTRACE=1 RUST_LOG=info,slingshot=trace /home/ubuntu/links/target/release
   --acme-contact phil@bad-example.com \
   --acme-cache-path /home/ubuntu/certs
 ```
+
+
+## license
+
+This work is dual-licensed under MIT and Apache 2.0. You can choose between one of them if you use this work.
+
+`SPDX-License-Identifier: MIT OR Apache-2.0`

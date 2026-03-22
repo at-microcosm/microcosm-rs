@@ -82,14 +82,25 @@ A low-overhead jetstream client with cursor handling and automatic reconnect.
 > See also: [Rocketman](https://github.com/teal-fm/cadet/tree/main/rocketman), another excellent rust jetstream client which shares some lineage and _is_ published on crates.io.
 
 
-
-🔭 Deprecated: [Who am I](./who-am-i)
+🔭 Deprecated: [Who am I](./legacy/who-am-i)
 -------------------------------------
 
 An identity bridge for microcosm demos, that kinda worked. Fixing its problems is about equivalent to reinventing a lot of OIDC, so it's being retired.
 
-- Source: [./who-am-i/](./who-am-i/)
+- Source: [./who-am-i/](./legacy/who-am-i/)
 - Status: ready for retirement.
 
 > [!warning]
 > `who-am-i` is still in use for the Spacedust Notifications demo, but that will hopefully be migrated to use atproto oauth directly instead.
+
+
+🪩 Deprecated: [Reflector](./legacy/reflector)
+----------------------------------------------
+
+a tiny did:web service server that maps subdomains to a single service endpoint
+
+
+License
+-------
+
+Individual projects in this repo may differ in their licenses -- a missing license file in any project folder is a bug. Please open an issue if you notice one has been overlooked.
