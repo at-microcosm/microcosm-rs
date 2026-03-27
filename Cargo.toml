@@ -7,11 +7,9 @@ members = [
     "ufos",
     "ufos/fuzz",
     "spacedust",
-    "who-am-i",
     "slingshot",
     "quasar",
     "pocket",
-    "reflector",
 ]
 
 [workspace.dependencies]
