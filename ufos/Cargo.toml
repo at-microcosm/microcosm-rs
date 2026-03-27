@@ -34,5 +34,9 @@ tokio-util = "0.7.15"
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = "0.6.0"
 
+[[bin]]
+name = "analyze"
+path = "src/bin/analyze.rs"
+
 [dev-dependencies]
 tempfile = "3.19.1"
