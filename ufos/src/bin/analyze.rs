@@ -104,28 +104,28 @@ fn scan_weekly(
 
 fn weekly_users(rollups: &PartitionHandle) -> anyhow::Result<()> {
     let weekly_data = scan_weekly(rollups)?;
-    println!("{:<14} {:>12}", "week", "est_users");
+    println!("week\test_users");
     for (&week_us, (sketch, _)) in &weekly_data {
         let week = WeekTruncatedCursor::try_from_raw_u64(week_us)?;
-        println!("{:<14} {:>12}", week_label(week), sketch.estimate());
+        println!("{}\t{}", week_label(week), sketch.estimate());
     }
     Ok(())
 }
 
 fn weekly_groups(rollups: &PartitionHandle) -> anyhow::Result<()> {
     let weekly_data = scan_weekly(rollups)?;
-    println!("{:<14} {:>8}", "week", "groups");
+    println!("week\tgroups");
     for (&week_us, (_, entries)) in &weekly_data {
         let week = WeekTruncatedCursor::try_from_raw_u64(week_us)?;
         let count = entries.iter().filter(|(_, est)| *est > 10).count();
-        println!("{:<14} {:>8}", week_label(week), count);
+        println!("{}\t{}", week_label(week), count);
     }
     Ok(())
 }
 
 fn weekly_parents(rollups: &PartitionHandle) -> anyhow::Result<()> {
     let weekly_data = scan_weekly(rollups)?;
-    println!("{:<14} {:>8}  top parent prefixes", "week", "parents");
+    println!("week\tparents\ttop parent prefixes");
     for (&week_us, (_, entries)) in &weekly_data {
         let week = WeekTruncatedCursor::try_from_raw_u64(week_us)?;
         let mut parent_counts: BTreeMap<&str, usize> = BTreeMap::new();
@@ -144,7 +144,7 @@ fn weekly_parents(rollups: &PartitionHandle) -> anyhow::Result<()> {
             .map(|(prefix, count)| format!("{prefix}({count})"))
             .collect();
         println!(
-            "{:<14} {:>8}  {}",
+            "{}\t{}\t{}",
             week_label(week),
             total_parents,
             top.join(", ")
