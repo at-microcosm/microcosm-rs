@@ -28,7 +28,7 @@ jobs:
       - name: get nightly toolchain for jetstream fmt
         run: rustup toolchain install nightly --allow-downgrade -c rustfmt
       - name: fmt
-        run: cargo fmt --package links --package constellation --package ufos --package spacedust --package who-am-i --package slingshot --package pocket -- --check
+        run: cargo fmt --package constellation --package links --package pocket --package quasar --package slingshot --package spacedust --package ufos -- --check
       - name: fmt jetstream (nightly)
         run: cargo +nightly fmt --package jetstream -- --check
       - name: clippy

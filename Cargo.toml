@@ -14,3 +14,5 @@ members = [
 
 [workspace.dependencies]
 clap = { version = "4.5.56", features = ["derive", "env"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
