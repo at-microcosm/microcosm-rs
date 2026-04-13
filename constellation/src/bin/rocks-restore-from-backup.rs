@@ -59,6 +59,7 @@ fn main() -> Result<()> {
             args.endpoint,
             args.prefix,
             ?args.dest,
+            ?args.concurrency,
             backup = describe_backup(args.backup),
             mode = "eat-rocks object storage",
             "restoring rocksdb backup..."
