@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use ufos::db_types::{db_complete, DbBytes};
 use ufos::store_types::{
-    AllTimeRollupKey, AllTimeRollupStaticPrefix, CountsValue, WeekTruncatedCursor,
-    WeeklyRollupKey, WeeklyRollupStaticPrefix, WithCollection,
+    AllTimeRollupKey, AllTimeRollupStaticPrefix, CountsValue, WeekTruncatedCursor, WeeklyRollupKey,
+    WeeklyRollupStaticPrefix, WithCollection,
 };
 
 #[derive(Parser)]
@@ -69,6 +69,7 @@ fn total_users(rollups: &PartitionHandle) -> anyhow::Result<()> {
 
 /// Scan weekly rollups once, returning week -> (merged sketch, per-group entries)
 /// Only non-excluded groups are included.
+#[expect(clippy::type_complexity)]
 fn scan_weekly(
     rollups: &PartitionHandle,
 ) -> anyhow::Result<BTreeMap<u64, (Sketch<14>, Vec<(String, u64)>)>> {
@@ -94,7 +95,7 @@ fn scan_weekly(
         }
 
         scanned += 1;
-        if scanned % 500_000 == 0 {
+        if scanned.is_multiple_of(500_000) {
             eprintln!("  ...scanned {scanned} weekly entries");
         }
     }
