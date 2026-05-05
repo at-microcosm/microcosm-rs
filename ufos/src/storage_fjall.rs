@@ -1205,7 +1205,7 @@ impl FjallWriter {
 
         let mut dirty_nsids = HashSet::new();
 
-        #[derive(Eq, Hash, PartialEq)]
+        #[derive(Debug, Eq, Hash, PartialEq)]
         enum Rollup {
             Hourly(HourTruncatedCursor),
             Weekly(WeekTruncatedCursor),
@@ -1235,7 +1235,9 @@ impl FjallWriter {
             dirty_nsids.insert(key.collection().clone());
 
             batch.remove(&self.rollups, key_bytes);
-            let val = db_complete::<CountsValue>(&val_bytes)?;
+            let val = db_complete::<CountsValue>(&val_bytes).inspect_err(|e| {
+                log::error!("bad CountsValue at {key:?} from rolling up timelies: {e}")
+            })?;
             counts_by_rollup
                 .entry((
                     key.collection().clone(),
@@ -1275,7 +1277,10 @@ impl FjallWriter {
                 .get(&rollup_key_bytes)?
                 .as_deref()
                 .map(db_complete::<CountsValue>)
-                .transpose()?
+                .transpose()
+                .inspect_err(|e| {
+                    log::error!("bad CountsValue at {nsid:?}/{rollup:?} from counts_by_rollup: {e}")
+                })?
                 .unwrap_or_default();
 
             // now that we have values, we can know the exising ranks

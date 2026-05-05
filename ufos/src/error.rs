@@ -28,11 +28,11 @@ pub enum StorageError {
     InitError(String),
     #[error("DB seems to be in a bad state: {0}")]
     BadStateError(String),
-    #[error("Fjall error")]
+    #[error("Fjall error: {0}")]
     FjallError(#[from] fjall::Error),
-    #[error("LSM-tree error (from fjall)")]
+    #[error("LSM-tree error (from fjall): {0}")]
     FjallLsmError(#[from] fjall::LsmError),
-    #[error("Bytes encoding error")]
+    #[error("Bytes encoding error: {0}")]
     EncodingError(#[from] EncodingError),
     #[error("If you ever see this, there's a bug in the code. The error was stolen")]
     Stolen,
