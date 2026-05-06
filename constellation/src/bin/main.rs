@@ -190,6 +190,11 @@ fn run(
         }
     })?;
 
+    // Install metrics server only if requested
+    if collect_metrics {
+        install_metrics_server(metrics_bind)?;
+    }
+
     let qsize = Arc::new(AtomicU32::new(0));
 
     thread::scope(|s| {
@@ -225,13 +230,7 @@ fn run(
                     .enable_all()
                     .build()
                     .expect("axum startup")
-                    .block_on(async {
-                        // Install metrics server only if requested
-                        if collect_metrics {
-                            install_metrics_server(metrics_bind)?;
-                        }
-                        serve(readable, bind, did_web_domain, staying_alive).await
-                    })
+                    .block_on(serve(readable, bind, did_web_domain, staying_alive))
                     .unwrap();
                 stay_alive.drop_guard();
             }
@@ -244,7 +243,6 @@ fn run(
                 let check_alive = stay_alive.clone();
 
                 let process_collector = metrics_process::Collector::default();
-                process_collector.describe();
                 if let Some(ref p) = data_dir {
                     if let Err(e) = fs4::available_space(p) {
                         eprintln!("fs4 failed to get available space. may not be supported here? space metrics may be absent. e: {e:?}");
@@ -313,6 +311,7 @@ fn install_metrics_server(metrics_bind: SocketAddr) -> Result<()> {
 }
 
 fn describe_metrics() {
+    metrics_process::Collector::default().describe();
     describe_gauge!(
         "storage_available",
         Unit::Bytes,
