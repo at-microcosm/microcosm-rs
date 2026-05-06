@@ -308,105 +308,20 @@ impl RocksStorage {
     }
 
     fn global_init(&self) -> Result<()> {
-        let first_run = self.db.get(JETSTREAM_CURSOR_KEY)?.is_some();
-        if first_run {
+        if self.db.get(STARTED_AT_KEY)?.is_none() {
             self.db.put(STARTED_AT_KEY, _rv(now()))?;
-
-            // hack / temporary: if we're a new db, put in a completed repair
-            // state so we don't run repairs (repairs are for old-code dbs)
-            let completed = TargetIdRepairState {
-                id_when_started: 0,
-                current_us_started_at: 0,
-                latest_repaired_i: 0,
-            };
-            self.db.put(TARGET_ID_REPAIR_STATE_KEY, _rv(completed))?;
         }
         Ok(())
     }
 
-    pub fn run_repair(&self, breather: Duration, stay_alive: CancellationToken) -> Result<bool> {
-        let mut state = match self
-            .db
-            .get(TARGET_ID_REPAIR_STATE_KEY)?
-            .map(|s| _vr(&s))
-            .transpose()?
-        {
-            Some(s) => s,
-            None => TargetIdRepairState {
-                id_when_started: self.did_id_table.priv_id_seq,
-                current_us_started_at: now(),
-                latest_repaired_i: 0,
-            },
-        };
-
-        eprintln!("initial repair state: {state:?}");
-
-        let cf = self.db.cf_handle(TARGET_IDS_CF).unwrap();
-
-        let mut iter = self.db.raw_iterator_cf(&cf);
-        iter.seek_to_first();
-
-        eprintln!("repair iterator sent to first key");
-
-        // skip ahead if we're done some, or take a single first step
-        for _ in 0..state.latest_repaired_i {
-            iter.next();
+    pub fn reset_start(&self) -> Result<bool> {
+        let existing = self.db.get(STARTED_AT_KEY)?;
+        if existing.is_none() {
+            bail!("not resetting started-at key because one wasn't set");
         }
-
-        eprintln!(
-            "repair iterator skipped to {}th key",
-            state.latest_repaired_i
-        );
-
-        let mut maybe_done = false;
-
-        let mut write_fast = rocksdb::WriteOptions::default();
-        write_fast.set_sync(false);
-        write_fast.disable_wal(true);
-
-        while !stay_alive.is_cancelled() && !maybe_done {
-            // let mut batch = WriteBatch::default();
-
-            let mut any_written = false;
-
-            for _ in 0..1000 {
-                if state.latest_repaired_i % 1_000_000 == 0 {
-                    eprintln!("target iter at {}", state.latest_repaired_i);
-                }
-                state.latest_repaired_i += 1;
-
-                if !iter.valid() {
-                    eprintln!("invalid iter, are we done repairing?");
-                    maybe_done = true;
-                    break;
-                };
-
-                // eprintln!("iterator seems to be valid! getting the key...");
-                let raw_key = iter.key().unwrap();
-                if raw_key.len() == 8 {
-                    // eprintln!("found an 8-byte key, skipping it since it's probably an id...");
-                    iter.next();
-                    continue;
-                }
-                let target: TargetKey = _kr::<TargetKey>(raw_key)?;
-                let target_id: TargetId = _vr(iter.value().unwrap())?;
-
-                self.db
-                    .put_cf_opt(&cf, target_id.id().to_be_bytes(), _rv(&target), &write_fast)?;
-                any_written = true;
-                iter.next();
-            }
-
-            if any_written {
-                self.db
-                    .put(TARGET_ID_REPAIR_STATE_KEY, _rv(state.clone()))?;
-                std::thread::sleep(breather);
-            }
-        }
-
-        eprintln!("repair iterator done.");
-
-        Ok(false)
+        self.db.put(STARTED_AT_KEY, _rv(COZY_FIRST_CURSOR))?;
+        println!("started-at key reset to {COZY_FIRST_CURSOR}");
+        Ok(true)
     }
 
     pub fn start_backup(
@@ -1795,4 +1710,35 @@ mod tests {
     }
 
     // TODO: add tests for key prefixes actually prefixing (bincode encoding _should_...)
+
+    #[test]
+    fn rocks_started_at_persists_across_opens() -> Result<()> {
+        let dir = tempdir()?;
+
+        let mut store = RocksStorage::new(dir.path())?;
+        store.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "a.b.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("e.com".into()),
+                    path: ".uri".into(),
+                }],
+            },
+            0,
+        )?;
+        let first = store.get_stats()?.started_at;
+        drop(store);
+
+        std::thread::sleep(Duration::from_millis(5));
+
+        let store = RocksStorage::new(dir.path())?;
+        let second = store.get_stats()?.started_at;
+
+        assert_eq!(first, second, "STARTED_AT must not change across opens");
+        Ok(())
+    }
 }

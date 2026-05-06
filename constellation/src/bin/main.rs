@@ -63,9 +63,9 @@ struct Args {
     /// Don't change the database jetstream cursor when using a fixture
     #[arg(long, requires("fixture"))]
     fixture_preserve_cursor: bool,
-    /// run a scan across the target id table and write all key -> ids to id -> keys
+    /// fix the constellation start date (funny previous bug oops)
     #[arg(long, action)]
-    repair_target_ids: bool,
+    reset_db_start: bool,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -133,13 +133,11 @@ fn main() -> Result<()> {
             }
             println!("rocks ready.");
             std::thread::scope(|s| {
-                if args.repair_target_ids {
+                if args.reset_db_start {
                     let rocks = rocks.clone();
-                    let stay_alive = stay_alive.clone();
                     s.spawn(move || {
-                        let rep = rocks.run_repair(time::Duration::from_millis(0), stay_alive);
-                        eprintln!("repair finished: {rep:?}");
-                        rep
+                        let res = rocks.reset_start();
+                        eprintln!("reset start finished: {res:?}");
                     });
                 }
                 s.spawn(|| {
@@ -304,10 +302,14 @@ fn run(
 fn install_metrics_server(metrics_bind: SocketAddr) -> Result<()> {
     println!("installing metrics server...");
     PrometheusBuilder::new()
+        .idle_timeout(
+            metrics_util::MetricKindMask::ALL,
+            Some(time::Duration::from_secs(900)), // 15 min
+        )
         .set_quantiles(&[0.5, 0.9, 0.99, 1.0])?
         .set_bucket_duration(time::Duration::from_secs(30))?
         .set_bucket_count(NonZero::new(10).unwrap()) // count * duration = 5 mins. stuff doesn't happen that fast here.
-        .set_enable_unit_suffix(true)
+        .with_recommended_naming(true)
         .with_http_listener(metrics_bind)
         .install()?;
     println!("metrics server installed! listening at {metrics_bind:?}");
