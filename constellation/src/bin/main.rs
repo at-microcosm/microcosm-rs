@@ -301,6 +301,7 @@ fn run(
 
 fn install_metrics_server(metrics_bind: SocketAddr) -> Result<()> {
     println!("installing metrics server...");
+    #[expect(deprecated, reason = "would change counters to _total suffix, needs dash updates")]
     PrometheusBuilder::new()
         .idle_timeout(
             metrics_util::MetricKindMask::ALL,
@@ -309,7 +310,7 @@ fn install_metrics_server(metrics_bind: SocketAddr) -> Result<()> {
         .set_quantiles(&[0.5, 0.9, 0.99, 1.0])?
         .set_bucket_duration(time::Duration::from_secs(30))?
         .set_bucket_count(NonZero::new(10).unwrap()) // count * duration = 5 mins. stuff doesn't happen that fast here.
-        .with_recommended_naming(true)
+        .set_enable_unit_suffix(true)
         .with_http_listener(metrics_bind)
         .install()?;
     println!("metrics server installed! listening at {metrics_bind:?}");
