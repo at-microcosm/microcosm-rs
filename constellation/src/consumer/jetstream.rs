@@ -1,7 +1,5 @@
 use anyhow::{bail, Result};
-use metrics::{
-    counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram, Unit,
-};
+use metrics::{counter, gauge, histogram};
 use std::io::{Cursor, ErrorKind, Read};
 use std::net::ToSocketAddrs;
 use std::thread;
@@ -19,52 +17,6 @@ pub fn consume_jetstream(
     stream: String,
     staying_alive: CancellationToken,
 ) -> Result<()> {
-    describe_counter!(
-        "jetstream_connnect",
-        Unit::Count,
-        "attempts to connect to a jetstream server"
-    );
-    describe_counter!(
-        "jetstream_read",
-        Unit::Count,
-        "attempts to read an event from jetstream"
-    );
-    describe_counter!(
-        "jetstream_read_fail",
-        Unit::Count,
-        "failures to read events from jetstream"
-    );
-    describe_counter!(
-        "jetstream_read_bytes",
-        Unit::Bytes,
-        "total received message bytes from jetstream"
-    );
-    describe_counter!(
-        "jetstream_read_bytes_decompressed",
-        Unit::Bytes,
-        "total decompressed message bytes from jetstream"
-    );
-    describe_histogram!(
-        "jetstream_read_bytes_decompressed",
-        Unit::Bytes,
-        "decompressed size of jetstream messages"
-    );
-    describe_counter!(
-        "jetstream_events",
-        Unit::Count,
-        "valid json messages received"
-    );
-    describe_histogram!(
-        "jetstream_events_queued",
-        Unit::Count,
-        "event messages waiting in queue"
-    );
-    describe_gauge!(
-        "jetstream_cursor_age",
-        Unit::Microseconds,
-        "microseconds between our clock and the jetstream event's time_us"
-    );
-
     let dict = DecoderDictionary::copy(JETSTREAM_ZSTD_DICTIONARY);
     let mut connect_retries = 0;
     let mut latest_cursor = cursor;

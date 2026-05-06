@@ -22,8 +22,10 @@ use crate::{CountsByCount, Did, ManyToManyItem, RecordId};
 
 mod acceptable;
 mod filters;
+mod link_source;
 
 use acceptable::{acceptable, ExtractAccept};
+use link_source::{parse_link_source, parse_path};
 
 const DEFAULT_CURSOR_LIMIT: u64 = 100;
 const DEFAULT_CURSOR_LIMIT_MAX: u64 = 1000;
@@ -353,17 +355,16 @@ fn get_many_to_many_counts(
             .filter(|s| !s.is_empty()),
     );
 
-    let Some((collection, path)) = query.source.split_once(':') else {
-        return Err(http::StatusCode::BAD_REQUEST);
-    };
-    let path = format!(".{path}");
+    let (collection, path) =
+        parse_link_source(&query.source).map_err(|_| http::StatusCode::BAD_REQUEST)?; // TODO: better response errors!
 
-    let path_to_other = format!(".{}", query.path_to_other);
+    let path_to_other =
+        parse_path(&query.path_to_other).map_err(|_| http::StatusCode::BAD_REQUEST)?; // TODO: better response errors!
 
     let paged = store
         .get_many_to_many_counts(
             &query.subject,
-            collection,
+            &collection,
             &path,
             &path_to_other,
             limit,
@@ -442,12 +443,10 @@ fn get_backlink_counts(
     query: axum_extra::extract::Query<GetItemsCountQuery>,
     store: impl LinkReader,
 ) -> Result<impl IntoResponse, http::StatusCode> {
-    let Some((collection, path)) = query.source.split_once(':') else {
-        return Err(http::StatusCode::BAD_REQUEST);
-    };
-    let path = format!(".{path}");
+    let (collection, path) =
+        parse_link_source(&query.source).map_err(|_| http::StatusCode::BAD_REQUEST)?; // TODO: better response errors!
     let total = store
-        .get_count(&query.subject, collection, &path)
+        .get_count(&query.subject, &collection, &path)
         .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(acceptable(
@@ -551,10 +550,8 @@ fn get_backlinks(
             .map(|d| Did(d.to_string())),
     );
 
-    let Some((collection, path)) = query.source.split_once(':') else {
-        return Err(http::StatusCode::BAD_REQUEST);
-    };
-    let path = format!(".{path}");
+    let (collection, path) =
+        parse_link_source(&query.source).map_err(|_| http::StatusCode::BAD_REQUEST)?; // TODO: better response errors!
 
     let order = if query.reverse {
         Order::OldestToNewest
@@ -565,7 +562,7 @@ fn get_backlinks(
     let paged = store
         .get_links(
             &query.subject,
-            collection,
+            &collection,
             &path,
             order,
             limit,
@@ -755,17 +752,16 @@ fn get_many_to_many(
             .filter(|s| !s.is_empty()),
     );
 
-    let Some((collection, path)) = query.source.split_once(':') else {
-        return Err(http::StatusCode::BAD_REQUEST);
-    };
-    let path = format!(".{path}");
+    let (collection, path) =
+        parse_link_source(&query.source).map_err(|_| http::StatusCode::BAD_REQUEST)?; // TODO: better response errors!
 
-    let path_to_other = format!(".{}", query.path_to_other);
+    let path_to_other =
+        parse_path(&query.path_to_other).map_err(|_| http::StatusCode::BAD_REQUEST)?; // TODO: better response errors!
 
     let paged = store
         .get_many_to_many(
             &query.subject,
-            collection,
+            &collection,
             &path,
             &path_to_other,
             limit,
@@ -824,13 +820,11 @@ fn get_backlink_dids(
         return Err(http::StatusCode::BAD_REQUEST);
     }
 
-    let Some((collection, path)) = query.source.split_once(':') else {
-        return Err(http::StatusCode::BAD_REQUEST);
-    };
-    let path = format!(".{path}");
+    let (collection, path) =
+        parse_link_source(&query.source).map_err(|_| http::StatusCode::BAD_REQUEST)?; // TODO: better response errors!
 
     let paged = store
-        .get_distinct_dids(&query.subject, collection, &path, limit, until)
+        .get_distinct_dids(&query.subject, &collection, &path, limit, until)
         .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let cursor = paged.next.map(|next| {

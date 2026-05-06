@@ -117,7 +117,7 @@ fn restore_from_object_store(
     backup_id: Option<u32>,
     concurrency: Option<usize>,
 ) -> Result<()> {
-    use eat_rocks::{public_bucket, restore, RestoreOptions};
+    use eat_rocks::{public_bucket, restore, RestoreOptions, TargetMode};
     use tokio::runtime::Runtime;
 
     let rt = Runtime::new()?;
@@ -130,6 +130,7 @@ fn restore_from_object_store(
             RestoreOptions {
                 backup_id: backup_id.map(u64::from),
                 concurrency: concurrency.unwrap_or(RestoreOptions::default().concurrency),
+                target_mode: TargetMode::CreateOrReplace,
                 ..Default::default()
             },
         )

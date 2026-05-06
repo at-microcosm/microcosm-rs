@@ -243,13 +243,19 @@
 
   <p>A DID like <code>did:plc:hdhoaan3xa3jiuq4fg4mefid</code>, or an AT-URI like <code>at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/3lgu4lg6j2k2v</code>, or a URI like <code>https://example.com</code>.</p>
 
+  <h3>Source</h3>
+
+  <p>A <em>link source</em>, made of a collection and path, like <code>app.bsky.feed.like:subject<code>. The <code>:</code> separates them.
+
   <h3>Collection</h3>
 
   <p>A record NSID like <code>app.bsky.feed.like</code>.</p>
 
   <h3>Path</h3>
 
-  <p>A (currently-very-very-hacky) json-path-ish representation of the source of a link in a record. Records may contain multiple links with different meanings, so this specifies which specific link is of interest. Like <code>.subject.uri</code>.</p>
+  <p>A (currently-hacky) json-path-ish representation of the source of a link in a record. Records may contain multiple links with different meanings, so this specifies which specific link is of interest. Like <code>.subject.uri</code>.</p>
+
+  <p>A special path, <code>.</code>, represents <em>the record's <code>rkey</code></em>. Tangled's vouch system puts the vouch subject in the <code>rkey</code> instead of inside the actual record. Its link source looks like this: <code>sh.tangled.graph.vouch:.</code></p>
 
   <h3>Cursor</h3>
 

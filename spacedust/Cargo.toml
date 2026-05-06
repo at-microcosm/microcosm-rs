@@ -16,7 +16,7 @@ links = { path = "../links" }
 log = "0.4.27"
 metrics = "0.24.2"
 metrics-exporter-prometheus = { version = "0.17.1", features = ["http-listener"] }
-rand = "0.9.1"
+rand = "0.9.3"
 schemars = "0.8.22"
 semver = "1.0.26"
 serde = { version = "1.0.219", features = ["derive"] }

@@ -1,5 +1,6 @@
 use anyhow::{bail, Result};
 use clap::{Parser, ValueEnum};
+use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use std::net::SocketAddr;
 use std::num::NonZero;
@@ -60,9 +61,12 @@ struct Args {
     /// Saved jsonl from jetstream to use instead of a live subscription
     #[arg(short, long)]
     fixture: Option<PathBuf>,
-    /// run a scan across the target id table and write all key -> ids to id -> keys
+    /// Don't change the database jetstream cursor when using a fixture
+    #[arg(long, requires("fixture"))]
+    fixture_preserve_cursor: bool,
+    /// fix the constellation start date (funny previous bug oops)
     #[arg(long, action)]
-    repair_target_ids: bool,
+    reset_db_start: bool,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -88,8 +92,9 @@ fn main() -> Result<()> {
     println!("starting with storage backend: {:?}...", args.backend);
 
     let fixture = args.fixture;
+    let fixture_preserve_cursor = args.fixture_preserve_cursor;
     if let Some(ref p) = fixture {
-        println!("using fixture at {p:?}...");
+        println!("using fixture at {p:?}, preserving cursor? {fixture_preserve_cursor:?}...");
     }
 
     let stream = jetstream_url(&args.jetstream);
@@ -105,6 +110,7 @@ fn main() -> Result<()> {
         StorageBackend::Memory => run(
             MemStorage::new(),
             fixture,
+            fixture_preserve_cursor,
             None,
             args.did_web_domain,
             stream,
@@ -128,19 +134,15 @@ fn main() -> Result<()> {
             }
             println!("rocks ready.");
             std::thread::scope(|s| {
-                if args.repair_target_ids {
-                    let rocks = rocks.clone();
-                    let stay_alive = stay_alive.clone();
-                    s.spawn(move || {
-                        let rep = rocks.run_repair(time::Duration::from_millis(0), stay_alive);
-                        eprintln!("repair finished: {rep:?}");
-                        rep
-                    });
+                if args.reset_db_start {
+                    let res = rocks.reset_start();
+                    eprintln!("reset start finished: {res:?}");
                 }
                 s.spawn(|| {
                     let r = run(
                         rocks,
                         fixture,
+                        fixture_preserve_cursor,
                         args.data,
                         args.did_web_domain,
                         stream,
@@ -163,6 +165,7 @@ fn main() -> Result<()> {
 fn run(
     mut storage: impl LinkStorage,
     fixture: Option<PathBuf>,
+    fixture_preserve_cursor: bool,
     data_dir: Option<PathBuf>,
     did_web_domain: Option<String>,
     stream: String,
@@ -184,6 +187,11 @@ fn run(
         }
     })?;
 
+    // Install metrics server only if requested
+    if collect_metrics {
+        install_metrics_server(metrics_bind)?;
+    }
+
     let qsize = Arc::new(AtomicU32::new(0));
 
     thread::scope(|s| {
@@ -194,7 +202,14 @@ fn run(
             let stay_alive = stay_alive.clone();
             let staying_alive = stay_alive.clone();
             move || {
-                if let Err(e) = consume(storage, qsize, fixture, stream, staying_alive) {
+                if let Err(e) = consume(
+                    storage,
+                    qsize,
+                    fixture,
+                    fixture_preserve_cursor,
+                    stream,
+                    staying_alive,
+                ) {
                     eprintln!("jetstream finished with error: {e}");
                 }
                 stay_alive.drop_guard();
@@ -212,13 +227,7 @@ fn run(
                     .enable_all()
                     .build()
                     .expect("axum startup")
-                    .block_on(async {
-                        // Install metrics server only if requested
-                        if collect_metrics {
-                            install_metrics_server(metrics_bind)?;
-                        }
-                        serve(readable, bind, did_web_domain, staying_alive).await
-                    })
+                    .block_on(serve(readable, bind, did_web_domain, staying_alive))
                     .unwrap();
                 stay_alive.drop_guard();
             }
@@ -231,17 +240,6 @@ fn run(
                 let check_alive = stay_alive.clone();
 
                 let process_collector = metrics_process::Collector::default();
-                process_collector.describe();
-                metrics::describe_gauge!(
-                    "storage_available",
-                    metrics::Unit::Bytes,
-                    "available to be allocated"
-                );
-                metrics::describe_gauge!(
-                    "storage_free",
-                    metrics::Unit::Bytes,
-                    "unused bytes in filesystem"
-                );
                 if let Some(ref p) = data_dir {
                     if let Err(e) = fs4::available_space(p) {
                         eprintln!("fs4 failed to get available space. may not be supported here? space metrics may be absent. e: {e:?}");
@@ -289,15 +287,122 @@ fn run(
 
 fn install_metrics_server(metrics_bind: SocketAddr) -> Result<()> {
     println!("installing metrics server...");
+    #[expect(
+        deprecated,
+        reason = "would change counters to _total suffix, needs dash updates"
+    )]
     PrometheusBuilder::new()
+        .idle_timeout(
+            metrics_util::MetricKindMask::ALL,
+            Some(time::Duration::from_secs(900)), // 15 min
+        )
         .set_quantiles(&[0.5, 0.9, 0.99, 1.0])?
         .set_bucket_duration(time::Duration::from_secs(30))?
         .set_bucket_count(NonZero::new(10).unwrap()) // count * duration = 5 mins. stuff doesn't happen that fast here.
         .set_enable_unit_suffix(true)
         .with_http_listener(metrics_bind)
         .install()?;
+    describe_metrics();
     println!("metrics server installed! listening at {metrics_bind:?}");
     Ok(())
+}
+
+fn describe_metrics() {
+    metrics_process::Collector::default().describe();
+    describe_gauge!(
+        "storage_available",
+        Unit::Bytes,
+        "available to be allocated"
+    );
+    describe_gauge!("storage_free", Unit::Bytes, "unused bytes in filesystem");
+    describe_counter!(
+        "jetstream_connnect",
+        Unit::Count,
+        "attempts to connect to a jetstream server"
+    );
+    describe_counter!(
+        "jetstream_read",
+        Unit::Count,
+        "attempts to read an event from jetstream"
+    );
+    describe_counter!(
+        "jetstream_read_fail",
+        Unit::Count,
+        "failures to read events from jetstream"
+    );
+    describe_counter!(
+        "jetstream_read_bytes",
+        Unit::Bytes,
+        "total received message bytes from jetstream"
+    );
+    describe_counter!(
+        "jetstream_read_bytes_decompressed",
+        Unit::Bytes,
+        "total decompressed message bytes from jetstream"
+    );
+    describe_histogram!(
+        "jetstream_read_bytes_decompressed",
+        Unit::Bytes,
+        "decompressed size of jetstream messages"
+    );
+    describe_counter!(
+        "jetstream_events",
+        Unit::Count,
+        "valid json messages received"
+    );
+    describe_histogram!(
+        "jetstream_events_queued",
+        Unit::Count,
+        "event messages waiting in queue"
+    );
+    describe_gauge!(
+        "jetstream_cursor_age",
+        Unit::Microseconds,
+        "microseconds between our clock and the jetstream event's time_us"
+    );
+    describe_counter!(
+        "consumer_events_non_actionable",
+        Unit::Count,
+        "count of non-actionable events"
+    );
+    describe_counter!(
+        "consumer_events_actionable",
+        Unit::Count,
+        "count of action by type. *all* atproto record delete events are included"
+    );
+    describe_counter!(
+        "consumer_events_actionable_links",
+        Unit::Count,
+        "total links encountered"
+    );
+    describe_histogram!(
+        "consumer_events_actionable_links",
+        Unit::Count,
+        "number of links per message"
+    );
+    #[cfg(feature = "rocks")]
+    {
+        describe_histogram!(
+            "storage_rocksdb_read_seconds",
+            Unit::Seconds,
+            "duration of the read stage of actions"
+        );
+        describe_histogram!(
+            "storage_rocksdb_action_seconds",
+            Unit::Seconds,
+            "duration of read + write of actions"
+        );
+        describe_counter!(
+            "storage_rocksdb_batch_ops_total",
+            Unit::Count,
+            "total batched operations from actions"
+        );
+        describe_histogram!(
+            "storage_rocksdb_delete_account_ops",
+            Unit::Count,
+            "total batched ops for account deletions"
+        );
+    }
 }
 
 #[cfg(test)]
