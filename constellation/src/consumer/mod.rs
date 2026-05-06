@@ -7,7 +7,7 @@ use anyhow::Result;
 use jetstream::consume_jetstream;
 use jsonl_file::consume_jsonl_file;
 use links::{parse_any_link, record::walk_record, CollectedLink};
-use metrics::{counter, describe_counter, describe_histogram, histogram, Unit};
+use metrics::{counter, histogram};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -23,27 +23,6 @@ pub fn consume(
     stream: String,
     staying_alive: CancellationToken,
 ) -> Result<()> {
-    describe_counter!(
-        "consumer_events_non_actionable",
-        Unit::Count,
-        "count of non-actionable events"
-    );
-    describe_counter!(
-        "consumer_events_actionable",
-        Unit::Count,
-        "count of action by type. *all* atproto record delete events are included"
-    );
-    describe_counter!(
-        "consumer_events_actionable_links",
-        Unit::Count,
-        "total links encountered"
-    );
-    describe_histogram!(
-        "consumer_events_actionable_links",
-        Unit::Count,
-        "number of links per message"
-    );
-
     let mut fixture_cursor = None;
     let (receiver, consumer_handle) = if let Some(f) = fixture {
         let (sender, receiver) = flume::bounded(21);

@@ -7,7 +7,7 @@ use crate::{CountsByCount, Did, ManyToManyItem, RecordId};
 use anyhow::{anyhow, bail, Result};
 use bincode::Options as BincodeOptions;
 use links::CollectedLink;
-use metrics::{counter, describe_counter, describe_histogram, histogram, Unit};
+use metrics::{counter, histogram};
 use ratelimit::Ratelimiter;
 use rocksdb::backup::{BackupEngine, BackupEngineOptions};
 use rocksdb::{
@@ -256,7 +256,6 @@ fn now() -> u64 {
 
 impl RocksStorage {
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        Self::describe_metrics();
         let me = RocksStorage::open_readmode(path, false)?;
         me.global_init()?;
         Ok(me)
@@ -418,29 +417,6 @@ impl RocksStorage {
             BackupEngine::open(&BackupEngineOptions::new(path)?, &rocksdb::Env::new()?)?;
         engine.purge_old_backups(num_backups_to_keep)?;
         Ok(())
-    }
-
-    fn describe_metrics() {
-        describe_histogram!(
-            "storage_rocksdb_read_seconds",
-            Unit::Seconds,
-            "duration of the read stage of actions"
-        );
-        describe_histogram!(
-            "storage_rocksdb_action_seconds",
-            Unit::Seconds,
-            "duration of read + write of actions"
-        );
-        describe_counter!(
-            "storage_rocksdb_batch_ops_total",
-            Unit::Count,
-            "total batched operations from actions"
-        );
-        describe_histogram!(
-            "storage_rocksdb_delete_account_ops",
-            Unit::Count,
-            "total batched ops for account deletions"
-        );
     }
 
     fn merge_op_extend_did_ids(

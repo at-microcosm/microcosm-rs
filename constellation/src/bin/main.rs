@@ -1,5 +1,6 @@
 use anyhow::{bail, Result};
 use clap::{Parser, ValueEnum};
+use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use std::net::SocketAddr;
 use std::num::NonZero;
@@ -244,16 +245,6 @@ fn run(
 
                 let process_collector = metrics_process::Collector::default();
                 process_collector.describe();
-                metrics::describe_gauge!(
-                    "storage_available",
-                    metrics::Unit::Bytes,
-                    "available to be allocated"
-                );
-                metrics::describe_gauge!(
-                    "storage_free",
-                    metrics::Unit::Bytes,
-                    "unused bytes in filesystem"
-                );
                 if let Some(ref p) = data_dir {
                     if let Err(e) = fs4::available_space(p) {
                         eprintln!("fs4 failed to get available space. may not be supported here? space metrics may be absent. e: {e:?}");
@@ -301,7 +292,10 @@ fn run(
 
 fn install_metrics_server(metrics_bind: SocketAddr) -> Result<()> {
     println!("installing metrics server...");
-    #[expect(deprecated, reason = "would change counters to _total suffix, needs dash updates")]
+    #[expect(
+        deprecated,
+        reason = "would change counters to _total suffix, needs dash updates"
+    )]
     PrometheusBuilder::new()
         .idle_timeout(
             metrics_util::MetricKindMask::ALL,
@@ -313,8 +307,106 @@ fn install_metrics_server(metrics_bind: SocketAddr) -> Result<()> {
         .set_enable_unit_suffix(true)
         .with_http_listener(metrics_bind)
         .install()?;
+    describe_metrics();
     println!("metrics server installed! listening at {metrics_bind:?}");
     Ok(())
+}
+
+fn describe_metrics() {
+    describe_gauge!(
+        "storage_available",
+        Unit::Bytes,
+        "available to be allocated"
+    );
+    describe_gauge!("storage_free", Unit::Bytes, "unused bytes in filesystem");
+    describe_counter!(
+        "jetstream_connnect",
+        Unit::Count,
+        "attempts to connect to a jetstream server"
+    );
+    describe_counter!(
+        "jetstream_read",
+        Unit::Count,
+        "attempts to read an event from jetstream"
+    );
+    describe_counter!(
+        "jetstream_read_fail",
+        Unit::Count,
+        "failures to read events from jetstream"
+    );
+    describe_counter!(
+        "jetstream_read_bytes",
+        Unit::Bytes,
+        "total received message bytes from jetstream"
+    );
+    describe_counter!(
+        "jetstream_read_bytes_decompressed",
+        Unit::Bytes,
+        "total decompressed message bytes from jetstream"
+    );
+    describe_histogram!(
+        "jetstream_read_bytes_decompressed",
+        Unit::Bytes,
+        "decompressed size of jetstream messages"
+    );
+    describe_counter!(
+        "jetstream_events",
+        Unit::Count,
+        "valid json messages received"
+    );
+    describe_histogram!(
+        "jetstream_events_queued",
+        Unit::Count,
+        "event messages waiting in queue"
+    );
+    describe_gauge!(
+        "jetstream_cursor_age",
+        Unit::Microseconds,
+        "microseconds between our clock and the jetstream event's time_us"
+    );
+    describe_counter!(
+        "consumer_events_non_actionable",
+        Unit::Count,
+        "count of non-actionable events"
+    );
+    describe_counter!(
+        "consumer_events_actionable",
+        Unit::Count,
+        "count of action by type. *all* atproto record delete events are included"
+    );
+    describe_counter!(
+        "consumer_events_actionable_links",
+        Unit::Count,
+        "total links encountered"
+    );
+    describe_histogram!(
+        "consumer_events_actionable_links",
+        Unit::Count,
+        "number of links per message"
+    );
+    #[cfg(feature = "rocks")]
+    {
+        describe_histogram!(
+            "storage_rocksdb_read_seconds",
+            Unit::Seconds,
+            "duration of the read stage of actions"
+        );
+        describe_histogram!(
+            "storage_rocksdb_action_seconds",
+            Unit::Seconds,
+            "duration of read + write of actions"
+        );
+        describe_counter!(
+            "storage_rocksdb_batch_ops_total",
+            Unit::Count,
+            "total batched operations from actions"
+        );
+        describe_histogram!(
+            "storage_rocksdb_delete_account_ops",
+            Unit::Count,
+            "total batched ops for account deletions"
+        );
+    }
 }
 
 #[cfg(test)]
