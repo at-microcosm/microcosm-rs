@@ -67,6 +67,9 @@ struct Args {
     /// fix the constellation start date (funny previous bug oops)
     #[arg(long, action)]
     reset_db_start: bool,
+    /// debugging: print the current jetstream cursor and exit
+    #[arg(long, action)]
+    print_cursor: bool,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -88,6 +91,18 @@ fn jetstream_url(provided: &str) -> String {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    #[cfg(feature = "rocks")]
+    if args.print_cursor {
+        let storage_dir = args.data.clone().unwrap_or("rocks.test".into());
+        let mut store = RocksStorage::open_readonly(storage_dir)?;
+        if let Some(cursor) = store.get_cursor()? {
+            println!("cursor: {cursor}");
+        } else {
+            println!("[no cursor]");
+        }
+        return Ok(());
+    }
 
     println!("starting with storage backend: {:?}...", args.backend);
 
