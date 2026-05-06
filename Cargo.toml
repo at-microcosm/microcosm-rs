@@ -14,3 +14,4 @@ members = [
 
 [workspace.dependencies]
 clap = { version = "4.5.56", features = ["derive", "env"] }
+thiserror = "2.0.18"

@@ -60,6 +60,9 @@ struct Args {
     /// Saved jsonl from jetstream to use instead of a live subscription
     #[arg(short, long)]
     fixture: Option<PathBuf>,
+    /// Don't change the database jetstream cursor when using a fixture
+    #[arg(long, requires("fixture"))]
+    fixture_preserve_cursor: bool,
     /// run a scan across the target id table and write all key -> ids to id -> keys
     #[arg(long, action)]
     repair_target_ids: bool,
@@ -88,8 +91,9 @@ fn main() -> Result<()> {
     println!("starting with storage backend: {:?}...", args.backend);
 
     let fixture = args.fixture;
+    let fixture_preserve_cursor = args.fixture_preserve_cursor;
     if let Some(ref p) = fixture {
-        println!("using fixture at {p:?}...");
+        println!("using fixture at {p:?}, preserving cursor? {fixture_preserve_cursor:?}...");
     }
 
     let stream = jetstream_url(&args.jetstream);
@@ -105,6 +109,7 @@ fn main() -> Result<()> {
         StorageBackend::Memory => run(
             MemStorage::new(),
             fixture,
+            fixture_preserve_cursor,
             None,
             args.did_web_domain,
             stream,
@@ -141,6 +146,7 @@ fn main() -> Result<()> {
                     let r = run(
                         rocks,
                         fixture,
+                        fixture_preserve_cursor,
                         args.data,
                         args.did_web_domain,
                         stream,
@@ -163,6 +169,7 @@ fn main() -> Result<()> {
 fn run(
     mut storage: impl LinkStorage,
     fixture: Option<PathBuf>,
+    fixture_preserve_cursor: bool,
     data_dir: Option<PathBuf>,
     did_web_domain: Option<String>,
     stream: String,
@@ -194,7 +201,14 @@ fn run(
             let stay_alive = stay_alive.clone();
             let staying_alive = stay_alive.clone();
             move || {
-                if let Err(e) = consume(storage, qsize, fixture, stream, staying_alive) {
+                if let Err(e) = consume(
+                    storage,
+                    qsize,
+                    fixture,
+                    fixture_preserve_cursor,
+                    stream,
+                    staying_alive,
+                ) {
                     eprintln!("jetstream finished with error: {e}");
                 }
                 stay_alive.drop_guard();

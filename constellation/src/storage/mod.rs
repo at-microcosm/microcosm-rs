@@ -1499,6 +1499,133 @@ mod tests {
         assert_stats(storage.get_stats()?, 1..=1, 2..=2, 1..=1);
     });
 
+    //////// rkey-indexed (path = ".") /////////
+
+    test_each_storage!(rkey_indexed_basic, |storage| {
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:voucher".into(),
+                    collection: "sh.tangled.graph.vouch".into(),
+                    rkey: "did:plc:vouchedfor".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Did("did:plc:vouchedfor".into()),
+                    path: ".".into(),
+                }],
+            },
+            0,
+        )?;
+
+        assert_eq!(
+            storage.get_count("did:plc:vouchedfor", "sh.tangled.graph.vouch", ".")?,
+            1
+        );
+        assert_eq!(
+            storage.get_distinct_did_count("did:plc:vouchedfor", "sh.tangled.graph.vouch", ".")?,
+            1
+        );
+        assert_eq!(
+            storage.get_links(
+                "did:plc:vouchedfor",
+                "sh.tangled.graph.vouch",
+                ".",
+                Order::NewestToOldest,
+                100,
+                None,
+                &HashSet::default(),
+            )?,
+            PagedAppendingCollection {
+                version: (1, 0),
+                items: vec![RecordId {
+                    did: "did:plc:voucher".into(),
+                    collection: "sh.tangled.graph.vouch".into(),
+                    rkey: "did:plc:vouchedfor".into(),
+                }],
+                next: None,
+                total: 1,
+            }
+        );
+        assert_stats(storage.get_stats()?, 1..=1, 1..=1, 1..=1);
+
+        storage.push(
+            &ActionableEvent::DeleteRecord(RecordId {
+                did: "did:plc:voucher".into(),
+                collection: "sh.tangled.graph.vouch".into(),
+                rkey: "did:plc:vouchedfor".into(),
+            }),
+            0,
+        )?;
+        assert_eq!(
+            storage.get_count("did:plc:vouchedfor", "sh.tangled.graph.vouch", ".")?,
+            0
+        );
+    });
+
+    test_each_storage!(rkey_link_and_record_link_coexist, |storage| {
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:voucher".into(),
+                    collection: "sh.tangled.graph.vouch".into(),
+                    rkey: "did:plc:vouchedfor".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Did("did:plc:vouchedfor".into()),
+                        path: ".".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("https://atproto.com".into()),
+                        path: ".reason".into(),
+                    },
+                ],
+            },
+            0,
+        )?;
+
+        assert_eq!(
+            storage.get_count("did:plc:vouchedfor", "sh.tangled.graph.vouch", ".")?,
+            1
+        );
+        assert_eq!(
+            storage.get_count("https://atproto.com", "sh.tangled.graph.vouch", ".reason")?,
+            1
+        );
+
+        assert_eq!(storage.get_all_record_counts("did:plc:vouchedfor")?, {
+            let mut counts = HashMap::new();
+            let mut by_path = HashMap::new();
+            by_path.insert(".".into(), 1);
+            counts.insert("sh.tangled.graph.vouch".into(), by_path);
+            counts
+        });
+        assert_eq!(storage.get_all_record_counts("https://atproto.com")?, {
+            let mut counts = HashMap::new();
+            let mut by_path = HashMap::new();
+            by_path.insert(".reason".into(), 1);
+            counts.insert("sh.tangled.graph.vouch".into(), by_path);
+            counts
+        });
+
+        storage.push(
+            &ActionableEvent::DeleteRecord(RecordId {
+                did: "did:plc:voucher".into(),
+                collection: "sh.tangled.graph.vouch".into(),
+                rkey: "did:plc:vouchedfor".into(),
+            }),
+            0,
+        )?;
+        assert_eq!(
+            storage.get_count("did:plc:vouchedfor", "sh.tangled.graph.vouch", ".")?,
+            0
+        );
+        assert_eq!(
+            storage.get_count("https://atproto.com", "sh.tangled.graph.vouch", ".reason")?,
+            0
+        );
+    });
+
     //////// many-to-many /////////
 
     test_each_storage!(get_m2m_counts_empty, |storage| {
