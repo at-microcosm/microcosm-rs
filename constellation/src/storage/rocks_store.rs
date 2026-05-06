@@ -718,6 +718,8 @@ impl RocksStorage {
 impl Drop for RocksStorage {
     fn drop(&mut self) {
         if self.is_writer {
+            // TODO: cloning a writer is possible and currently breaks things
+            // (constellation code currently doesn't/shouldn't clone the writer)
             println!("rocksdb writer: cleaning up for shutdown...");
             if let Err(e) = self.db.flush_wal(true) {
                 eprintln!("rocks: flushing wal failed: {e:?}");

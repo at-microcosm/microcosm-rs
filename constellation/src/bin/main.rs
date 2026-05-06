@@ -135,11 +135,8 @@ fn main() -> Result<()> {
             println!("rocks ready.");
             std::thread::scope(|s| {
                 if args.reset_db_start {
-                    let rocks = rocks.clone();
-                    s.spawn(move || {
-                        let res = rocks.reset_start();
-                        eprintln!("reset start finished: {res:?}");
-                    });
+                    let res = rocks.reset_start();
+                    eprintln!("reset start finished: {res:?}");
                 }
                 s.spawn(|| {
                     let r = run(
