@@ -138,7 +138,7 @@ fn weekly_parents(rollups: &PartitionHandle) -> anyhow::Result<()> {
         }
         let total_parents = parent_counts.len();
         let mut sorted: Vec<_> = parent_counts.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.sort_by_key(|c| std::cmp::Reverse(c.1));
         let top: Vec<String> = sorted
             .iter()
             .take(5)
