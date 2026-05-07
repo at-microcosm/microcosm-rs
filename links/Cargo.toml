@@ -1,5 +1,6 @@
 [package]
 name = "microcosm-links"
+description = "Link extraction for atproto records"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
