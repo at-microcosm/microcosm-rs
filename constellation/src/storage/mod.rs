@@ -166,7 +166,7 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use links::{CollectedLink, Link};
+    use microcosm_links::{CollectedLink, Link};
     use std::ops::RangeBounds;
 
     macro_rules! test_each_storage {

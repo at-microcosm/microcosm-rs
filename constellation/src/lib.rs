@@ -2,7 +2,7 @@ pub mod consumer;
 pub mod server;
 pub mod storage;
 
-use links::CollectedLink;
+use microcosm_links::CollectedLink;
 use serde::{Deserialize, Serialize};
 use std::convert::From;
 

@@ -5,7 +5,7 @@ use super::{
 use crate::{ActionableEvent, CountsByCount, Did, ManyToManyItem, RecordId};
 
 use anyhow::{anyhow, Result};
-use links::CollectedLink;
+use microcosm_links::CollectedLink;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};

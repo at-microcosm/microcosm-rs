@@ -2,8 +2,10 @@ use fluent_uri::Uri;
 
 pub mod at_uri;
 pub mod did;
+#[cfg(feature = "json")]
 pub mod record;
 
+#[cfg(feature = "json")]
 pub use record::collect_links;
 
 #[derive(Debug, Clone, Ord, Eq, PartialOrd, PartialEq)]

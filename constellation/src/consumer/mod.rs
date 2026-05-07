@@ -6,8 +6,8 @@ use crate::{ActionableEvent, RecordId};
 use anyhow::Result;
 use jetstream::consume_jetstream;
 use jsonl_file::consume_jsonl_file;
-use links::{parse_any_link, record::walk_record, CollectedLink};
 use metrics::{counter, histogram};
+use microcosm_links::{parse_any_link, record::walk_record, CollectedLink};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -212,7 +212,7 @@ pub fn get_actionable(event: &JsonValue) -> Option<(ActionableEvent, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use links::{CollectedLink, Link};
+    use microcosm_links::{CollectedLink, Link};
 
     #[test]
     fn test_create_like() {

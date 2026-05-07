@@ -7,7 +7,7 @@ test:
 fmt:
 	cargo fmt \
 						--package constellation \
-						--package links \
+						--package microcosm-links \
 						--package pocket \
 						--package quasar \
 						--package slingshot \

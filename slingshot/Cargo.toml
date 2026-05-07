@@ -13,7 +13,7 @@ ctrlc = "3.4.7"
 foyer = { version = "0.22.3", features = ["serde"] }
 hickory-resolver = "0.25.2"
 jetstream = { path = "../jetstream", features = ["metrics"] }
-links = { path = "../links" }
+microcosm-links = { path = "../links" }
 log = "0.4.27"
 metrics = "0.24.2"
 metrics-exporter-prometheus = { version = "0.17.1", features = ["http-listener"] }

@@ -1,9 +1,14 @@
 [package]
-name = "links"
+name = "microcosm-links"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[features]
+default = ["json"]
+json = ["dep:tinyjson"]
 
 [dependencies]
 fluent-uri = "0.3.2"
 thiserror = "2.0.9"
-tinyjson = "2.5.1"
+tinyjson = { version = "2.5.1", optional = true }

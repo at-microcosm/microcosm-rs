@@ -6,8 +6,8 @@ use crate::{CountsByCount, Did, ManyToManyItem, RecordId};
 
 use anyhow::{anyhow, bail, Result};
 use bincode::Options as BincodeOptions;
-use links::CollectedLink;
 use metrics::{counter, histogram};
+use microcosm_links::CollectedLink;
 use ratelimit::Ratelimiter;
 use rocksdb::backup::{BackupEngine, BackupEngineOptions};
 use rocksdb::{
@@ -1590,7 +1590,7 @@ impl RecordLinkTargets {
 mod tests {
     use super::super::ActionableEvent;
     use super::*;
-    use links::Link;
+    use microcosm_links::Link;
     use tempfile::tempdir;
 
     #[test]

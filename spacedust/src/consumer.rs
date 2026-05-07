@@ -5,7 +5,7 @@ use jetstream::{
     DefaultJetstreamEndpoints, JetstreamCompression, JetstreamConfig, JetstreamConnector,
     events::{CommitOp, Cursor, EventKind},
 };
-use links::collect_links;
+use microcosm_links::collect_links;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;

@@ -956,12 +956,12 @@ dependencies = [
  "flume",
  "fs4 0.12.0",
  "headers-accept",
- "links",
  "mediatype",
  "metrics",
  "metrics-exporter-prometheus 0.18.3",
  "metrics-process",
  "metrics-util",
+ "microcosm-links",
  "num-format",
  "ratelimit",
  "rocksdb",
@@ -2957,15 +2957,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "links"
-version = "0.1.0"
-dependencies = [
- "fluent-uri",
- "thiserror 2.0.18",
- "tinyjson",
-]
-
-[[package]]
 name = "linux-raw-sys"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3233,6 +3224,15 @@ dependencies = [
  "rand_xoshiro",
  "rapidhash",
  "sketches-ddsketch",
+]
+
+[[package]]
+name = "microcosm-links"
+version = "0.1.0"
+dependencies = [
+ "fluent-uri",
+ "thiserror 2.0.18",
+ "tinyjson",
 ]
 
 [[package]]
@@ -4955,10 +4955,10 @@ dependencies = [
  "foyer",
  "hickory-resolver",
  "jetstream",
- "links",
  "log",
  "metrics",
  "metrics-exporter-prometheus 0.17.2",
+ "microcosm-links",
  "poem",
  "poem-openapi",
  "reqwest",
@@ -5072,10 +5072,10 @@ dependencies = [
  "futures",
  "http",
  "jetstream",
- "links",
  "log",
  "metrics",
  "metrics-exporter-prometheus 0.17.2",
+ "microcosm-links",
  "rand 0.9.3",
  "schemars",
  "semver",

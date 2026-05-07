@@ -4,7 +4,7 @@ use crate::{
 };
 use atrium_api::types::string::{Cid, Did, Handle, Nsid, RecordKey};
 use foyer::HybridCache;
-use links::at_uri::parse_at_uri as normalize_at_uri;
+use microcosm_links::at_uri::parse_at_uri as normalize_at_uri;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::str::FromStr;

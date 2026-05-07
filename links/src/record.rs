@@ -1,6 +1,6 @@
 use tinyjson::JsonValue;
 
-use crate::{parse_any_link, CollectedLink};
+use crate::{CollectedLink, parse_any_link};
 
 pub fn walk_record(path: &str, v: &JsonValue, found: &mut Vec<CollectedLink>) {
     match v {
