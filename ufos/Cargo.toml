@@ -2,6 +2,7 @@
 name = "ufos"
 version = "0.1.0"
 edition = "2021"
+default-run = "ufos"
 
 [dependencies]
 anyhow = "1.0.97"
@@ -37,6 +38,10 @@ tikv-jemallocator = "0.6.0"
 [[bin]]
 name = "analyze"
 path = "src/bin/analyze.rs"
+
+[[bin]]
+name = "major-compact"
+path = "src/bin/major-compact.rs"
 
 [dev-dependencies]
 tempfile = "3.19.1"
