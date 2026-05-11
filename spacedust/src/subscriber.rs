@@ -42,11 +42,11 @@ impl Subscriber {
         loop {
             tokio::select! {
                 l = receiver.recv() => match l {
-                    Ok(link) => if self.filter(&link.properties) {
-                        if let Err(e) = ws_sender.send(link.message.clone()).await {
-                            log::warn!("failed to send link, dropping subscriber: {e:?}");
-                            break;
-                        }
+                    Ok(link) => if self.filter(&link.properties)
+                        && let Err(e) = ws_sender.send(link.message.clone()).await
+                    {
+                        log::warn!("failed to send link, dropping subscriber: {e:?}");
+                        break;
                     },
                     Err(RecvError::Closed) => self.shutdown.cancel(),
                     Err(RecvError::Lagged(n)) => {
@@ -124,8 +124,14 @@ impl Subscriber {
         let query = &self.query;
 
         // subject + subject DIDs are logical OR
-        if !(query.wanted_subjects.is_empty() && query.wanted_subject_dids.is_empty()
+        if !(query.wanted_subjects.is_empty()
+            && query.wanted_subject_prefixes.is_empty()
+            && query.wanted_subject_dids.is_empty()
             || query.wanted_subjects.contains(&properties.subject)
+            || query
+                .wanted_subject_prefixes
+                .iter()
+                .any(|p| properties.subject.starts_with(p))
             || properties
                 .subject_did
                 .as_ref()
@@ -154,6 +160,9 @@ impl MultiSubscribeQuery {
         }
         if opts.wanted_subject_dids.len() > 10_000 {
             return Err(SubscriberUpdateError::TooManyDidsWanted);
+        }
+        if opts.wanted_subject_prefixes.len() > 100 {
+            return Err(SubscriberUpdateError::TooManySubjectPrefixesWanted);
         }
         if opts.wanted_subjects.len() > 50_000 {
             return Err(SubscriberUpdateError::TooManySubjectsWanted);

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Pocket: atproto user preference storage</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="API Documentation for Pocket, a simple user-preference storage system for atproto" />
+    <style>
+      :root {
+        --scalar-small: 13px;
+      }
+      .scalar-app .markdown .markdown-alert {
+        font-size: var(--scalar-small);
+      }
+      .sidebar-heading-link-title {
+        line-height: 1.2;
+      }
+      .custom-header {
+        height: 42px;
+        background-color: #221828;
+        box-shadow: inset 0 -1px 0 var(--scalar-border-color);
+        color: var(--scalar-color-1);
+        font-size: var(--scalar-font-size-3);
+        font-family: 'Iowan Old Style', 'Palatino Linotype', 'URW Palladio L', P052, serif;
+        padding: 0 18px;
+        justify-content: space-between;
+      }
+      .custom-header,
+      .custom-header nav {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+      }
+      .custom-header a:hover {
+        color: var(--scalar-color-2);
+      }
+
+      .light-mode .custom-header {
+        background-color: thistle;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="custom-header scalar-app">
+      <p>
+        TODO: thing
+      </p>
+      <nav>
+        <b>a <a href="https://microcosm.blue">microcosm</a> project</b>
+        <a href="https://bsky.app/profile/microcosm.blue">@microcosm.blue</a>
+        <a href="https://github.com/at-microcosm">github</a>
+      </nav>
+    </header>
+
+    <script id="api-reference" type="application/json" data-url="/openapi"></script>
+
+    <script>
+      var configuration = {
+        theme: 'purple',
+        hideModels: true,
+      }
+      document.getElementById('api-reference').dataset.configuration = JSON.stringify(configuration)
+    </script>
+
+    <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
+  </body>
+</html>

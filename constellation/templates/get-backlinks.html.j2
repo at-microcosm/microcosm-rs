@@ -1,0 +1,55 @@
+{% extends "base.html.j2" %}
+{% import "try-it-macros.html.j2" as try_it %}
+
+{% block title %}Backlinks{% endblock %}
+{% block description %}All {{ query.source }} records with links to {{ query.subject }}{% endblock %}
+
+{% block content %}
+
+  {% call try_it::get_backlinks(query.subject, query.source, query.did, query.limit, query.reverse) %}
+
+  <h2>
+    Links to <code>{{ query.subject }}</code>
+    {% if let Some(browseable_uri) = query.subject|to_browseable %}
+      <small style="font-weight: normal; font-size: 1rem"><a href="{{ browseable_uri }}">browse record</a></small>
+    {% endif %}
+  </h2>
+
+  <p><strong>{{ total|human_number }} links</strong> from <code>{{ query.source }}</code>.</p>
+
+  <ul>
+    <li>See distinct linking DIDs at <code>/links/distinct-dids</code>: <a href="/links/distinct-dids?target={{ query.subject|urlencode }}&collection={{ collection|urlencode }}&path={{ path|urlencode }}">/links/distinct-dids?target={{ query.subject }}&collection={{ collection }}&path={{ path }}</a></li>
+    <li>See all links to this target at <code>/links/all</code>: <a href="/links/all?target={{ query.subject|urlencode }}">/links/all?target={{ query.subject }}</a></li>
+  </ul>
+
+  <h3>Links, most recent first:</h3>
+
+  {% for record in records %}
+    <pre style="display: block; margin: 1em 2em" class="code"><strong>DID</strong>:        {{ record.did().0 }} (<a href="/links/all?target={{ record.did().0|urlencode }}">DID links</a>)
+<strong>Collection</strong>: {{ record.collection }}
+<strong>RKey</strong>:       {{ record.rkey }}
+-> <a href="https://pdsls.dev/at://{{ record.did().0 }}/{{ record.collection }}/{{ record.rkey }}">browse record</a></pre>
+  {% endfor %}
+
+  {% if let Some(c) = cursor %}
+    <form method="get" action="/xrpc/blue.microcosm.links.getBacklinks">
+      <input type="hidden" name="subject" value="{{ query.subject }}" />
+      <input type="hidden" name="source" value="{{ query.source }}" />
+      <input type="hidden" name="limit" value="{{ query.limit }}" />
+      {% for did in query.did %}
+        <input type="hidden" name="did" value="{{ did }}" />
+      {% endfor %}
+      <input type="hidden" name="cursor" value={{ c|json|safe }} />
+      <input type="hidden" name="reverse" value="{{ query.reverse }}">
+      <button type="submit">next page&hellip;</button>
+    </form>
+  {% else %}
+    <button disabled><em>end of results</em></button>
+  {% endif %}
+
+  <details>
+    <summary>Raw JSON response</summary>
+    <pre class="code">{{ self|tojson }}</pre>
+  </details>
+
+{% endblock %}

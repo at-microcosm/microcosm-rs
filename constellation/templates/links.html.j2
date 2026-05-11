@@ -6,7 +6,7 @@
 
 {% block content %}
 
-  {% call try_it::links(query.target, query.collection, query.path) %}
+  {% call try_it::links(query.target, query.collection, query.path, query.did, query.limit) %}
 
   <h2>
     Links to <code>{{ query.target }}</code>
@@ -28,7 +28,7 @@
     <pre style="display: block; margin: 1em 2em" class="code"><strong>DID</strong>:        {{ record.did().0 }} (<a href="/links/all?target={{ record.did().0|urlencode }}">DID links</a>)
 <strong>Collection</strong>: {{ record.collection }}
 <strong>RKey</strong>:       {{ record.rkey }}
--> <a href="https://atproto-browser-plus-links.vercel.app/at/{{ record.did().0|urlencode }}/{{ record.collection }}/{{ record.rkey }}">browse record</a></pre>
+-> <a href="https://pdsls.dev/at://{{ record.did().0 }}/{{ record.collection }}/{{ record.rkey }}">browse record</a></pre>
   {% endfor %}
 
   {% if let Some(c) = cursor %}

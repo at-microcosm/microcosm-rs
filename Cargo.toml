@@ -7,6 +7,16 @@ members = [
     "ufos",
     "ufos/fuzz",
     "spacedust",
-    "who-am-i",
     "slingshot",
+    "quasar",
+    "pocket",
 ]
+
+[workspace.dependencies]
+clap = { version = "4.5.56", features = ["derive", "env"] }
+metrics = "0.24.5"
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false, features = ["http-listener"] }
+metrics-util = "0.20.3"
+thiserror = "2.0.18"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

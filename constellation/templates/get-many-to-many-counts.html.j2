@@ -1,0 +1,67 @@
+{% extends "base.html.j2" %}
+{% import "try-it-macros.html.j2" as try_it %}
+
+{% block title %}Many to Many counts{% endblock %}
+{% block description %}Counts of many-to-many {{ query.source }} join records with links to {{ query.subject }} and a secondary target at {{ query.path_to_other }}{% endblock %}
+
+{% block content %}
+
+  {% call try_it::get_many_to_many_counts(
+    query.subject,
+    query.source,
+    query.path_to_other,
+    query.did,
+    query.other_subject,
+    query.limit,
+  ) %}
+
+  <h2>
+    Many-to-many links to <code>{{ query.subject }}</code> joining through <code>{{ query.path_to_other }}</code>
+    {% if let Some(browseable_uri) = query.subject|to_browseable %}
+      <small style="font-weight: normal; font-size: 1rem"><a href="{{ browseable_uri }}">browse record</a></small>
+    {% endif %}
+  </h2>
+
+  <p><strong>{% if cursor.is_some() || query.cursor.is_some() %}more than {% endif %}{{ counts_by_other_subject.len()|to_u64|human_number }} joins</strong> <code>{{ query.source }}→{{ query.path_to_other }}</code></p>
+
+  <ul>
+    <li>See direct backlinks at <code>/xrpc/blue.microcosm.links.getBacklinks</code>: <a href="/xrpc/blue.microcosm.links.getBacklinks?subject={{ query.subject|urlencode }}&source={{ query.source|urlencode }}">/xrpc/blue.microcosm.links.getBacklinks?subject={{ query.subject }}&source={{ query.source }}</a></li>
+    <li>See all links to this target at <code>/links/all</code>: <a href="/links/all?target={{ query.subject|urlencode }}">/links/all?target={{ query.subject }}</a></li>
+  </ul>
+
+  <h3>Counts by other subject:</h3>
+
+  {% for counts in counts_by_other_subject %}
+    <pre style="display: block; margin: 1em 2em" class="code"><strong>Joined subject</strong>:    {{ counts.subject }}
+<strong>Joining records</strong>:   {{ counts.total }}
+<strong>Unique joiner ids</strong>: {{ counts.distinct }}
+-> {% if let Some(browseable_uri) = counts.subject|to_browseable -%}
+    <a href="{{ browseable_uri }}">browse record</a>
+  {%- endif %}</pre>
+  {% endfor %}
+
+  {% if let Some(c) = cursor %}
+    <form method="get" action="/xrpc/blue.microcosm.links.getManyToManyCounts">
+      <input type="hidden" name="subject" value="{{ query.subject }}" />
+      <input type="hidden" name="source" value="{{ query.source }}" />
+      <input type="hidden" name="pathToOther" value="{{ query.path_to_other }}" />
+      {% for did in query.did %}
+        <input type="hidden" name="did" value="{{ did }}" />
+      {% endfor %}
+      {% for otherSubject in query.other_subject %}
+        <input type="hidden" name="otherSubject" value="{{ otherSubject }}" />
+      {% endfor %}
+      <input type="hidden" name="limit" value="{{ query.limit }}" />
+      <input type="hidden" name="cursor" value={{ c|json|safe }} />
+      <button type="submit">next page&hellip;</button>
+    </form>
+  {% else %}
+    <button disabled><em>end of results</em></button>
+  {% endif %}
+
+  <details>
+    <summary>Raw JSON response</summary>
+    <pre class="code">{{ self|tojson }}</pre>
+  </details>
+
+{% endblock %}

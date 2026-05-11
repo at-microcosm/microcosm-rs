@@ -19,30 +19,130 @@
   <p>It works by recursively walking <em>all</em> records coming through the firehose, searching for anything that looks like a link. Links are indexed by the target they point at, the collection the record came from, and the JSON path to the link in that record.</p>
 
   <p>
-    This server has indexed <span class="stat">{{ stats.linking_records|human_number }}</span> links between <span class="stat">{{ stats.targetables|human_number }}</span> targets and sources from <span class="stat">{{ stats.dids|human_number }}</span> identities over <span class="stat">{{ days_indexed|human_number }}</span> days.<br/>
-    <small>(indexing new records in real time, backfill still TODO)</small>
+    This server has indexed <span class="stat">{{ stats.linking_records|human_number }}</span> links between <span class="stat">{{ stats.targetables|human_number }}</span> targets and sources from <span class="stat">{{ stats.dids|human_number }}</span> identities over <span class="stat">
+    {%- if let Some(days) = days_indexed %}
+      {{ days|human_number }}
+    {% else %}
+      ???
+    {% endif -%}
+    </span> days.<br/>
+    <small>(indexing new records in real time, backfill coming soon!)</small>
   </p>
 
-  <p>The API is currently <strong>unstable</strong>. But feel free to use it! If you want to be nice, put your project name and bsky username (or email) in your user-agent header for api requests.</p>
+  {# {% for k, v in stats.other_data.iter() %}
+    <p><strong>{{ k }}</strong>: {{ v }}</p>
+  {% endfor %} #}
+
+  <p>You're welcome to use this public instance! Please do not build the torment nexus. If you want to be nice, put your project name and bsky username (or email) in your user-agent header for api requests.</p>
 
 
   <h2>API Endpoints</h2>
+
+  <h3 class="route"><code>GET /xrpc/blue.microcosm.links.getBacklinks</code></h3>
+
+  <p>A list of records linking to any record, identity, or uri.</p>
+
+  <h4>Query parameters:</h4>
+
+  <ul>
+    <li><p><code>subject</code>: required, must url-encode. Example: <code>at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r</code></p></li>
+    <li><p><code>source</code>: required. Example: <code>app.bsky.feed.like:subject.uri</code></p></li>
+    <li><p><code>did</code>: optional, filter links to those from specific users. Include multiple times to filter by multiple users. Example: <code>did=did:plc:vc7f4oafdgxsihk4cry2xpze&did=did:plc:vc7f4oafdgxsihk4cry2xpze</code></p></li>
+    <li><p><code>limit</code>: optional. Default: <code>16</code>. Maximum: <code>100</code></p></li>
+    <li><p><code>reverse</code>: optional, return links in reverse order. Default: <code>false</code></p></li>
+  </ul>
+
+  <p style="margin-bottom: 0"><strong>Try it:</strong></p>
+  {% call
+  try_it::get_backlinks("at://did:plc:a4pqq234yw7fqbddawjo7y35/app.bsky.feed.post/3m237ilwc372e", "app.bsky.feed.like:subject.uri", [""], 16, false) %}
+
+
+  <h3 class="route"><code>GET /xrpc/blue.microcosm.links.getManyToManyCounts</code></h3>
+
+  <p>TODO: description</p>
+
+  <h4>Query parameters:</h4>
+
+  <ul>
+    <li><p><code>subject</code>: required, must url-encode. Example: <code>at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r</code></p></li>
+    <li><p><code>source</code>: required. Example: <code>app.bsky.feed.like:subject.uri</code></p></li>
+    <li><p><code>pathToOther</code>: required. Path to the secondary link in the many-to-many record. Example: <code>otherThing.uri</code></p></li>
+    <li><p><code>did</code>: optional, filter links to those from specific users. Include multiple times to filter by multiple users. Example: <code>did=did:plc:vc7f4oafdgxsihk4cry2xpze&did=did:plc:vc7f4oafdgxsihk4cry2xpze</code></p></li>
+    <li><p><code>otherSubject</code>: optional, filter secondary links to specific subjects. Include multiple times to filter by multiple users. Example: <code>at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r</code></p></li>
+    <li><p><code>limit</code>: optional. Default: <code>16</code>. Maximum: <code>100</code></p></li>
+  </ul>
+
+  <p style="margin-bottom: 0"><strong>Try it:</strong></p>
+  {% call try_it::get_many_to_many_counts(
+    "at://did:plc:wshs7t2adsemcrrd4snkeqli/sh.tangled.label.definition/good-first-issue",
+    "sh.tangled.label.op:add[].key",
+    "subject",
+    [""],
+    [""],
+    25,
+  ) %}
+
+  <h3 class="route"><code>GET /xrpc/blue.microcosm.links.getManyToMany</code></h3>
+
+  <p>A list of many-to-many join records linking to a target and a secondary target.</p>
+
+  <h4>Query parameters:</h4>
+
+  <ul>
+    <li><p><code>subject</code>: required, must url-encode. Example: <code>at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r</code></p></li>
+    <li><p><code>source</code>: required. Example: <code>app.bsky.feed.like:subject.uri</code></p></li>
+    <li><p><code>pathToOther</code>: required. Path to the secondary link in the many-to-many record. Example: <code>otherThing.uri</code></p></li>
+    <li><p><code>did</code>: optional, filter links to those from specific users. Include multiple times to filter by multiple users. Example: <code>did=did:plc:vc7f4oafdgxsihk4cry2xpze&did=did:plc:vc7f4oafdgxsihk4cry2xpze</code></p></li>
+    <li><p><code>otherSubject</code>: optional, filter secondary links to specific subjects. Include multiple times to filter by multiple subjects. Example: <code>at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r</code></p></li>
+    <li><p><code>limit</code>: optional. Default: <code>16</code>. Maximum: <code>100</code></p></li>
+  </ul>
+
+  <p style="margin-bottom: 0"><strong>Try it:</strong></p>
+  {% call try_it::get_many_to_many(
+    "at://did:plc:uyauirpjzk6le4ygqzatcwnq/app.bsky.graph.list/3lzhg33t5bf2h",
+    "app.bsky.graph.listitem:list",
+    "subject",
+    [""],
+    [""],
+    16,
+  ) %}
+
+  <h3 class="route"><code>GET /xrpc/blue.microcosm.links.getDistinct</code></h3>
+
+  <p>A list of distinct DIDs (identities) with links to a target.</p>
+
+  <h4>Query parameters:</h4>
+
+  <ul>
+    <li><code>subject</code>: required, must url-encode. The target being linked to. Example: <code>did:plc:vc7f4oafdgxsihk4cry2xpze</code> or <code>at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r</code></li>
+    <li><code>source</code>: required. Collection and path specification for the primary link. Example: <code>app.bsky.feed.like:subject.uri</code></li>
+    <li><code>limit</code>: optional. Number of results to return. Default: <code>16</code>. Maximum: <code>100</code></li>
+    <li><code>cursor</code>: optional, see Definitions.</li>
+  </ul>
+
+  <p style="margin-bottom: 0"><strong>Try it:</strong></p>
+  {% call try_it::get_backlink_dids("at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r", "app.bsky.feed.like:subject.uri") %}
 
   <h3 class="route"><code>GET /links</code></h3>
 
   <p>A list of records linking to a target.</p>
 
+  <p>[DEPRECATED]: use <code>GET /xrpc/blue.microcosm.links.getBacklinks</code>. New apps should avoid it, but this endpoint <strong>will</strong> remain supported for the forseeable future.</p>
+
   <h4>Query parameters:</h4>
 
   <ul>
-    <li><code>target</code>: required, must url-encode. Example: <code>at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r</code></li>
-    <li><code>collection</code>: required. Example: <code>app.bsky.feed.like</code></li>
-    <li><code>path</code>: required, must url-encode. Example: <code>.subject.uri</code></li>
+    <li><p><code>target</code>: required, must url-encode. Example: <code>at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r</code></p></li>
+    <li><p><code>collection</code>: required. Example: <code>app.bsky.feed.like</code></p></li>
+    <li><p><code>path</code>: required, must url-encode. Example: <code>.subject.uri</code></p></li>
+    <li><p><code>did</code>: optional, filter links to those from specific users. Include multiple times to filter by multiple users. Example: <code>did=did:plc:vc7f4oafdgxsihk4cry2xpze&did=did:plc:vc7f4oafdgxsihk4cry2xpze</code></p></li>
+    <li><p><code>from_dids</code> [deprecated]: optional. Use <code>did</code> instead. Example: <code>from_dids=did:plc:vc7f4oafdgxsihk4cry2xpze,did:plc:vc7f4oafdgxsihk4cry2xpze</code></p></li>
+    <li><p><code>limit</code>: optional. Default: <code>16</code>. Maximum: <code>100</code></p></li>
+    <li><p><code>reverse</code>: optional, return links in reverse order. Default: <code>false</code></p></li>
   </ul>
 
   <p style="margin-bottom: 0"><strong>Try it:</strong></p>
-  {% call try_it::links("at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r", "app.bsky.feed.like", ".subject.uri") %}
-
+  {% call try_it::links("at://did:plc:a4pqq234yw7fqbddawjo7y35/app.bsky.feed.post/3m237ilwc372e", "app.bsky.feed.like", ".subject.uri", [""], 16) %}
 
   <h3 class="route"><code>GET /links/distinct-dids</code></h3>
 
@@ -60,7 +160,7 @@
   {% call try_it::dids("at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r", "app.bsky.feed.like", ".subject.uri") %}
 
 
-  <h3 class="route"><code>GET /links/count</code></h3>
+  <h3 class="route deprecated"><code>[deprecated] GET /links/count</code></h3>
 
   <p>The total number of links pointing at a given target.</p>
 
@@ -76,6 +176,19 @@
   <p style="margin-bottom: 0"><strong>Try it:</strong></p>
   {% call try_it::links_count("did:plc:vc7f4oafdgxsihk4cry2xpze", "app.bsky.graph.block", ".subject") %}
 
+  <h3 class="route"><code>GET /xrpc/blue.microcosm.links.getBacklinksCount</code></h3>
+
+  <p>The total number of links pointing at a given target.</p>
+
+  <h4>Query parameters:</h4>
+
+  <ul>
+    <li><code>subject</code>: required, must url-encode. The target being linked to. Example: <code>did:plc:vc7f4oafdgxsihk4cry2xpze</code> or <code>at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r</code></li>
+    <li><code>source</code>: required. Collection and path specification for the primary link. Example: <code>app.bsky.feed.like:subject.uri</code></li>
+  </ul>
+
+  <p style="margin-bottom: 0"><strong>Try it:</strong></p>
+  {% call try_it::get_backlinks_count("did:plc:vc7f4oafdgxsihk4cry2xpze", "app.bsky.graph.block:subject") %}
 
   <h3 class="route"><code>GET /links/count/distinct-dids</code></h3>
 
@@ -130,13 +243,19 @@
 
   <p>A DID like <code>did:plc:hdhoaan3xa3jiuq4fg4mefid</code>, or an AT-URI like <code>at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/3lgu4lg6j2k2v</code>, or a URI like <code>https://example.com</code>.</p>
 
+  <h3>Source</h3>
+
+  <p>A <em>link source</em>, made of a collection and path, like <code>app.bsky.feed.like:subject<code>. The <code>:</code> separates them.
+
   <h3>Collection</h3>
 
   <p>A record NSID like <code>app.bsky.feed.like</code>.</p>
 
   <h3>Path</h3>
 
-  <p>A (currently-very-very-hacky) json-path-ish representation of the source of a link in a record. Records may contain multiple links with different meanings, so this specifies which specific link is of interest. Like <code>.subject.uri</code>.</p>
+  <p>A (currently-hacky) json-path-ish representation of the source of a link in a record. Records may contain multiple links with different meanings, so this specifies which specific link is of interest. Like <code>.subject.uri</code>.</p>
+
+  <p>A special path, <code>.</code>, represents <em>the record's <code>rkey</code></em>. Tangled's vouch system puts the vouch subject in the <code>rkey</code> instead of inside the actual record. Its link source looks like this: <code>sh.tangled.graph.vouch:.</code></p>
 
   <h3>Cursor</h3>
 

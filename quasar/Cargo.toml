@@ -1,0 +1,8 @@
+[package]
+name = "quasar"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { workspace = true }
+fjall = "2.11.2"

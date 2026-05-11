@@ -1,0 +1,38 @@
+{% extends "base.html.j2" %}
+{% import "try-it-macros.html.j2" as try_it %}
+
+{% block title %}Link Count{% endblock %}
+{% block description %}Count of {{ query.source }} records linking to {{ query.subject }}{% endblock %}
+
+{% block content %}
+
+  {% call try_it::get_backlinks_count(
+    query.subject,
+    query.source,
+  ) %}
+
+  <h2>
+    Total links to <code>{{ query.subject }}</code>
+    {% if let Some(browseable_uri) = query.subject|to_browseable %}
+      <small style="font-weight: normal; font-size: 1rem"><a href="{{ browseable_uri }}">browse record</a></small>
+    {% endif %}
+  </h2>
+
+  <p><strong><code>{{ total|human_number }}</code></strong> total links from <code>{{ query.source }}</code> to <code>{{ query.subject }}</code></p>
+
+  <ul>
+    <li>
+        See direct backlinks at <code>/xrpc/blue.microcosm.links.getBacklinks</code>:
+        <a href="/xrpc/blue.microcosm.links.getBacklinks?subject={{ query.subject|urlencode }}&source={{ query.source|urlencode }}">
+            /xrpc/blue.microcosm.links.getBacklinks?subject={{ query.subject }}&source={{ query.source }}
+        </a>
+    </li>
+    <li>See all links to this target at <code>/links/all</code>: <a href="/links/all?target={{ query.subject|urlencode }}">/links/all?target={{ query.subject }}</a></li>
+  </ul>
+
+  <details>
+    <summary>Raw JSON response</summary>
+    <pre class="code">{{ self|tojson }}</pre>
+  </details>
+
+{% endblock %}

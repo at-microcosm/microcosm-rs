@@ -1,0 +1,56 @@
+{
+  "lexicon": 1,
+  "id": "blue.microcosm.links.getBacklinkDids",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "a list of distinct dids with a specific records linking to a target at a specified path",
+      "parameters": {
+        "type": "params",
+        "required": ["subject", "source"],
+        "properties": {
+          "subject": {
+            "type": "string",
+            "format": "uri",
+            "description": "the target being linked to (at-uri, did, or uri)"
+          },
+          "source": {
+            "type": "string",
+            "description": "collection and path specification (e.g., 'app.bsky.feed.like:subject.uri')"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 16,
+            "description": "number of results to return"
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["total", "linking_dids"],
+          "properties": {
+            "total": {
+              "type": "integer",
+              "description": "total number of matching links"
+            },
+            "linking_dids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "did"
+              }
+            },
+            "cursor": {
+              "type": "string",
+              "description": "pagination cursor"
+            }
+          }
+        }
+      }
+    }
+  }
+}

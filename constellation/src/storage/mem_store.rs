@@ -1,7 +1,12 @@
-use super::{LinkReader, LinkStorage, PagedAppendingCollection, StorageStats};
-use crate::{ActionableEvent, CountsByCount, Did, RecordId};
-use anyhow::Result;
-use links::CollectedLink;
+use super::{
+    LinkReader, LinkStorage, ManyToManyCursor, Order, PagedAppendingCollection,
+    PagedOrderedCollection, StorageStats,
+};
+use crate::{ActionableEvent, CountsByCount, Did, ManyToManyItem, RecordId};
+
+use anyhow::{anyhow, Result};
+use microcosm_links::CollectedLink;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -132,6 +137,80 @@ impl LinkStorage for MemStorage {
 }
 
 impl LinkReader for MemStorage {
+    fn get_many_to_many_counts(
+        &self,
+        target: &str,
+        collection: &str,
+        path: &str,
+        path_to_other: &str,
+        limit: u64,
+        after: Option<String>,
+        filter_dids: &HashSet<Did>,
+        filter_to_targets: &HashSet<String>,
+    ) -> Result<PagedOrderedCollection<(String, u64, u64), String>> {
+        let data = self.0.lock().unwrap();
+        let Some(paths) = data.targets.get(&Target::new(target)) else {
+            return Ok(PagedOrderedCollection::empty());
+        };
+        let Some(linkers) = paths.get(&Source::new(collection, path)) else {
+            return Ok(PagedOrderedCollection::empty());
+        };
+
+        let path_to_other = RecordPath::new(path_to_other);
+        let filter_to_targets: HashSet<Target> =
+            HashSet::from_iter(filter_to_targets.iter().map(|s| Target::new(s)));
+
+        let mut grouped_counts: HashMap<Target, (u64, HashSet<Did>)> = HashMap::new();
+        for (did, rkey) in linkers.iter().flatten().cloned() {
+            if !filter_dids.is_empty() && !filter_dids.contains(&did) {
+                continue;
+            }
+            if let Some(fwd_target) = data
+                .links
+                .get(&did)
+                .unwrap_or(&HashMap::new())
+                .get(&RepoId {
+                    collection: collection.to_string(),
+                    rkey,
+                })
+                .unwrap_or(&Vec::new())
+                .iter()
+                .filter_map(|(path, target)| {
+                    if *path == path_to_other
+                        && (filter_to_targets.is_empty() || filter_to_targets.contains(target))
+                    {
+                        Some(target)
+                    } else {
+                        None
+                    }
+                })
+                .take(1)
+                .next()
+            {
+                let e = grouped_counts.entry(fwd_target.clone()).or_default();
+                e.0 += 1;
+                e.1.insert(did.clone());
+            }
+        }
+        let mut items: Vec<(String, u64, u64)> = grouped_counts
+            .iter()
+            .map(|(k, (n, u))| (k.0.clone(), *n, u.len() as u64))
+            .collect();
+        items.sort();
+        items = items
+            .into_iter()
+            .skip_while(|(t, _, _)| after.as_ref().map(|a| t <= a).unwrap_or(false))
+            .take(limit as usize + 1)
+            .collect();
+        let next = if items.len() as u64 > limit {
+            items.truncate(limit as usize);
+            items.last().map(|(t, _, _)| t.clone())
+        } else {
+            None
+        };
+        Ok(PagedOrderedCollection { items, next })
+    }
+
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
         let data = self.0.lock().unwrap();
         let Some(paths) = data.targets.get(&Target::new(target)) else {
@@ -159,59 +238,192 @@ impl LinkReader for MemStorage {
             .len() as u64)
     }
 
+    fn get_many_to_many(
+        &self,
+        target: &str,
+        collection: &str,
+        path: &str,
+        path_to_other: &str,
+        limit: u64,
+        after: Option<String>,
+        filter_dids: &HashSet<Did>,
+        filter_targets: &HashSet<String>,
+    ) -> Result<PagedOrderedCollection<ManyToManyItem, String>> {
+        // setup variables that we need later
+        let path_to_other = RecordPath(path_to_other.to_string());
+        let filter_targets: HashSet<Target> =
+            HashSet::from_iter(filter_targets.iter().map(|s| Target::new(s)));
+
+        // extract parts form composite cursor
+        let cursor = match after {
+            Some(a) => {
+                let (b, o) = a.split_once(',').ok_or(anyhow!("invalid cursor format"))?;
+                let backlink_idx = b
+                    .parse::<u64>()
+                    .map_err(|e| anyhow!("invalid cursor.0: {e}"))?;
+                let other_link_idx = o
+                    .parse::<u64>()
+                    .map_err(|e| anyhow!("invalid cursor.1: {e}"))?;
+                Some(ManyToManyCursor {
+                    backlink_idx,
+                    other_link_idx,
+                })
+            }
+            None => None,
+        };
+
+        let data = self.0.lock().unwrap();
+        let Some(sources) = data.targets.get(&Target::new(target)) else {
+            return Ok(PagedOrderedCollection::empty());
+        };
+        let Some(linkers) = sources.get(&Source::new(collection, path)) else {
+            return Ok(PagedOrderedCollection::empty());
+        };
+
+        let mut items: Vec<(usize, usize, ManyToManyItem)> = Vec::new();
+
+        // iterate backwards (who linked to the target?)
+        for (backlink_idx, (did, rkey)) in linkers
+            .iter()
+            .enumerate()
+            .filter_map(|(i, opt)| opt.as_ref().map(|v| (i, v)))
+            .skip_while(|(backlink_idx, _)| {
+                cursor.is_some_and(|c| *backlink_idx < c.backlink_idx as usize)
+            })
+            .filter(|(_, (did, _))| filter_dids.is_empty() || filter_dids.contains(did))
+        {
+            let Some(links) = data.links.get(did).and_then(|m| {
+                m.get(&RepoId {
+                    collection: collection.to_string(),
+                    rkey: rkey.clone(),
+                })
+            }) else {
+                continue;
+            };
+
+            // iterate forward (which of these links point to the "other" target?)
+            for (other_link_idx, (_, fwd_target)) in links
+                .iter()
+                .enumerate()
+                .filter(|(_, (p, t))| {
+                    *p == path_to_other && (filter_targets.is_empty() || filter_targets.contains(t))
+                })
+                .skip_while(|(other_link_idx, _)| {
+                    cursor.is_some_and(|c| {
+                        backlink_idx == c.backlink_idx as usize
+                            && *other_link_idx <= c.other_link_idx as usize
+                    })
+                })
+                .take(limit as usize + 1 - items.len())
+            {
+                let item = ManyToManyItem {
+                    link_record: RecordId {
+                        did: did.clone(),
+                        collection: collection.to_string(),
+                        rkey: rkey.0.clone(),
+                    },
+                    other_subject: fwd_target.0.clone(),
+                };
+                items.push((backlink_idx, other_link_idx, item));
+            }
+
+            // page full - eject
+            if items.len() > limit as usize {
+                break;
+            }
+        }
+
+        let next = (items.len() > limit as usize).then(|| {
+            let (b, o, _) = items[limit as usize - 1];
+            format!("{b},{o}")
+        });
+
+        let items = items
+            .into_iter()
+            .take(limit as usize)
+            .map(|(_, _, item)| item)
+            .collect();
+
+        Ok(PagedOrderedCollection { items, next })
+    }
+
     fn get_links(
         &self,
         target: &str,
         collection: &str,
         path: &str,
+        order: Order,
         limit: u64,
-        until: Option<u64>,
+        until: Option<u64>, // paged iteration endpoint
+        filter_dids: &HashSet<Did>,
     ) -> Result<PagedAppendingCollection<RecordId>> {
         let data = self.0.lock().unwrap();
         let Some(paths) = data.targets.get(&Target::new(target)) else {
-            return Ok(PagedAppendingCollection {
-                version: (0, 0),
-                items: Vec::new(),
-                next: None,
-                total: 0,
-            });
+            return Ok(PagedAppendingCollection::empty());
         };
         let Some(did_rkeys) = paths.get(&Source::new(collection, path)) else {
-            return Ok(PagedAppendingCollection {
-                version: (0, 0),
-                items: Vec::new(),
-                next: None,
-                total: 0,
-            });
+            return Ok(PagedAppendingCollection::empty());
         };
 
-        let total = did_rkeys.len();
-        let end = until
-            .map(|u| std::cmp::min(u as usize, total))
-            .unwrap_or(total);
-        let begin = end.saturating_sub(limit as usize);
-        let next = if begin == 0 { None } else { Some(begin as u64) };
+        let did_rkeys: Vec<_> = if !filter_dids.is_empty() {
+            did_rkeys
+                .iter()
+                .filter(|m| {
+                    Option::<(Did, RKey)>::clone(m)
+                        .map(|(did, _)| filter_dids.contains(&did))
+                        .unwrap_or(false)
+                })
+                .cloned()
+                .collect()
+        } else {
+            did_rkeys.to_vec()
+        };
 
-        let alive = did_rkeys.iter().flatten().count();
+        let total = did_rkeys.len() as u64;
+
+        // backlinks are stored oldest-to-newest (ascending index with increasing age)
+        let (start, take, next_until) = match order {
+            Order::OldestToNewest => {
+                let start = until.unwrap_or(0);
+                let next = start + limit + 1;
+                let next_until = if next < total { Some(next) } else { None };
+                (start, limit, next_until)
+            }
+            Order::NewestToOldest => {
+                let until = until.unwrap_or(total);
+                match until.checked_sub(limit) {
+                    Some(s) if s > 0 => (s, limit, Some(s)),
+                    Some(s) => (s, limit, None),
+                    None => (0, until, None),
+                }
+            }
+        };
+
+        let alive = did_rkeys.iter().flatten().count() as u64;
         let gone = total - alive;
 
-        let items: Vec<_> = did_rkeys[begin..end]
+        let items = did_rkeys
             .iter()
-            .rev()
+            .skip(start as usize)
+            .take(take as usize)
             .flatten()
             .filter(|(did, _)| *data.dids.get(did).expect("did must be in dids"))
             .map(|(did, rkey)| RecordId {
                 did: did.clone(),
                 rkey: rkey.0.clone(),
                 collection: collection.to_string(),
-            })
-            .collect();
+            });
+
+        let items: Vec<_> = match order {
+            Order::OldestToNewest => items.collect(), // links are stored oldest first
+            Order::NewestToOldest => items.rev().collect(),
+        };
 
         Ok(PagedAppendingCollection {
-            version: (total as u64, gone as u64),
+            version: (total, gone),
             items,
-            next,
-            total: alive as u64,
+            next: next_until,
+            total: alive,
         })
     }
 
@@ -225,20 +437,10 @@ impl LinkReader for MemStorage {
     ) -> Result<PagedAppendingCollection<Did>> {
         let data = self.0.lock().unwrap();
         let Some(paths) = data.targets.get(&Target::new(target)) else {
-            return Ok(PagedAppendingCollection {
-                version: (0, 0),
-                items: Vec::new(),
-                next: None,
-                total: 0,
-            });
+            return Ok(PagedAppendingCollection::empty());
         };
         let Some(did_rkeys) = paths.get(&Source::new(collection, path)) else {
-            return Ok(PagedAppendingCollection {
-                version: (0, 0),
-                items: Vec::new(),
-                next: None,
-                total: 0,
-            });
+            return Ok(PagedAppendingCollection::empty());
         };
 
         let dids: Vec<Option<Did>> = {
@@ -258,18 +460,21 @@ impl LinkReader for MemStorage {
                 .collect()
         };
 
-        let total = dids.len();
-        let end = until
-            .map(|u| std::cmp::min(u as usize, total))
-            .unwrap_or(total);
-        let begin = end.saturating_sub(limit as usize);
-        let next = if begin == 0 { None } else { Some(begin as u64) };
+        let total = dids.len() as u64;
+        let until = until.unwrap_or(total);
+        let (start, take, next_until) = match until.checked_sub(limit) {
+            Some(s) if s > 0 => (s, limit, Some(s)),
+            Some(s) => (s, limit, None),
+            None => (0, until, None),
+        };
 
-        let alive = dids.iter().flatten().count();
+        let alive = dids.iter().flatten().count() as u64;
         let gone = total - alive;
 
-        let items: Vec<Did> = dids[begin..end]
+        let items: Vec<Did> = dids
             .iter()
+            .skip(start as usize)
+            .take(take as usize)
             .rev()
             .flatten()
             .filter(|did| *data.dids.get(did).expect("did must be in dids"))
@@ -277,10 +482,10 @@ impl LinkReader for MemStorage {
             .collect();
 
         Ok(PagedAppendingCollection {
-            version: (total as u64, gone as u64),
+            version: (total, gone),
             items,
-            next,
-            total: alive as u64,
+            next: next_until,
+            total: alive,
         })
     }
 
@@ -304,8 +509,8 @@ impl LinkReader for MemStorage {
     ) -> Result<HashMap<String, HashMap<String, CountsByCount>>> {
         let data = self.0.lock().unwrap();
         let mut out: HashMap<String, HashMap<String, CountsByCount>> = HashMap::new();
-        if let Some(asdf) = data.targets.get(&Target::new(target)) {
-            for (Source { collection, path }, linkers) in asdf {
+        if let Some(source_linker_pairs) = data.targets.get(&Target::new(target)) {
+            for (Source { collection, path }, linkers) in source_linker_pairs {
                 let records = linkers.iter().flatten().count() as u64;
                 let distinct_dids = linkers
                     .iter()
@@ -338,6 +543,8 @@ impl LinkReader for MemStorage {
             dids,
             targetables,
             linking_records,
+            started_at: None,
+            other_data: Default::default(),
         })
     }
 }

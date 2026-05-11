@@ -1,0 +1,21 @@
+name: Build
+
+on:
+  push:
+    tags:
+      - "reflector-v*.*.*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: build reflector
+      run: cargo build --bin reflector --release && mv target/release/reflector target/release/reflector_amd64
+    - name: release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: target/release/reflector_amd64

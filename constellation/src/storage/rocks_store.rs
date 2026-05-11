@@ -1,9 +1,13 @@
-use super::{ActionableEvent, LinkReader, LinkStorage, PagedAppendingCollection, StorageStats};
-use crate::{CountsByCount, Did, RecordId};
-use anyhow::{bail, Result};
+use super::{
+    ActionableEvent, LinkReader, LinkStorage, ManyToManyCursor, Order, PagedAppendingCollection,
+    PagedOrderedCollection, StorageStats,
+};
+use crate::{CountsByCount, Did, ManyToManyItem, RecordId};
+
+use anyhow::{anyhow, bail, Result};
 use bincode::Options as BincodeOptions;
-use links::CollectedLink;
-use metrics::{counter, describe_counter, describe_histogram, histogram, Unit};
+use metrics::{counter, histogram};
+use microcosm_links::CollectedLink;
 use ratelimit::Ratelimiter;
 use rocksdb::backup::{BackupEngine, BackupEngineOptions};
 use rocksdb::{
@@ -11,7 +15,9 @@ use rocksdb::{
     MultiThreaded, Options, PrefixRange, ReadOptions, WriteBatch,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use tokio_util::sync::CancellationToken;
+
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
@@ -20,8 +26,7 @@ use std::sync::{
     Arc,
 };
 use std::thread;
-use std::time::{Duration, Instant};
-use tokio_util::sync::CancellationToken;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static DID_IDS_CF: &str = "did_ids";
 static TARGET_IDS_CF: &str = "target_ids";
@@ -29,6 +34,23 @@ static TARGET_LINKERS_CF: &str = "target_links";
 static LINK_TARGETS_CF: &str = "link_targets";
 
 static JETSTREAM_CURSOR_KEY: &str = "jetstream_cursor";
+static STARTED_AT_KEY: &str = "jetstream_first_cursor";
+// add reverse mappings for targets if this db was running before that was a thing
+static TARGET_ID_REPAIR_STATE_KEY: &str = "target_id_table_repair_state";
+
+static COZY_FIRST_CURSOR: u64 = 1_738_083_600_000_000; // constellation.microcosm.blue started
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TargetIdRepairState {
+    /// start time for repair, microseconds timestamp
+    current_us_started_at: u64,
+    /// id table's latest id when repair started
+    id_when_started: u64,
+    /// id table id
+    latest_repaired_i: u64,
+}
+impl AsRocksValue for TargetIdRepairState {}
+impl ValueFromRocks for TargetIdRepairState {}
 
 // todo: actually understand and set these options probably better
 fn rocks_opts_base() -> Options {
@@ -56,8 +78,8 @@ fn get_db_read_opts() -> Options {
 #[derive(Debug, Clone)]
 pub struct RocksStorage {
     pub db: Arc<DBWithThreadMode<MultiThreaded>>, // TODO: mov seqs here (concat merge op will be fun)
-    did_id_table: IdTable<Did, DidIdValue, true>,
-    target_id_table: IdTable<TargetKey, TargetId, false>,
+    did_id_table: IdTable<Did, DidIdValue>,
+    target_id_table: IdTable<TargetKey, TargetId>,
     is_writer: bool,
     backup_task: Arc<Option<thread::JoinHandle<Result<()>>>>,
 }
@@ -85,10 +107,7 @@ where
     fn cf_descriptor(&self) -> ColumnFamilyDescriptor {
         ColumnFamilyDescriptor::new(&self.name, rocks_opts_base())
     }
-    fn init<const WITH_REVERSE: bool>(
-        self,
-        db: &DBWithThreadMode<MultiThreaded>,
-    ) -> Result<IdTable<Orig, IdVal, WITH_REVERSE>> {
+    fn init(self, db: &DBWithThreadMode<MultiThreaded>) -> Result<IdTable<Orig, IdVal>> {
         if db.cf_handle(&self.name).is_none() {
             bail!("failed to get cf handle from db -- was the db open with our .cf_descriptor()?");
         }
@@ -119,7 +138,7 @@ where
     }
 }
 #[derive(Debug, Clone)]
-struct IdTable<Orig, IdVal: IdTableValue, const WITH_REVERSE: bool>
+struct IdTable<Orig, IdVal: IdTableValue>
 where
     Orig: KeyFromRocks,
     for<'a> &'a Orig: AsRocksKey,
@@ -127,7 +146,7 @@ where
     base: IdTableBase<Orig, IdVal>,
     priv_id_seq: u64,
 }
-impl<Orig: Clone, IdVal: IdTableValue, const WITH_REVERSE: bool> IdTable<Orig, IdVal, WITH_REVERSE>
+impl<Orig: Clone, IdVal: IdTableValue> IdTable<Orig, IdVal>
 where
     Orig: KeyFromRocks,
     for<'v> &'v IdVal: AsRocksValue,
@@ -139,7 +158,7 @@ where
             _key_marker: PhantomData,
             _val_marker: PhantomData,
             name: name.into(),
-            id_seq: Arc::new(AtomicU64::new(0)), // zero is "uninint", first seq num will be 1
+            id_seq: Arc::new(AtomicU64::new(0)), // zero is "uninit", first seq num will be 1
         }
     }
     fn get_id_val(
@@ -178,16 +197,11 @@ where
             id_value
         }))
     }
+
     fn estimate_count(&self) -> u64 {
         self.base.id_seq.load(Ordering::SeqCst) - 1 // -1 because seq zero is reserved
     }
-}
-impl<Orig: Clone, IdVal: IdTableValue> IdTable<Orig, IdVal, true>
-where
-    Orig: KeyFromRocks,
-    for<'v> &'v IdVal: AsRocksValue,
-    for<'k> &'k Orig: AsRocksKey,
-{
+
     fn get_or_create_id_val(
         &mut self,
         db: &DBWithThreadMode<MultiThreaded>,
@@ -215,22 +229,6 @@ where
         }
     }
 }
-impl<Orig: Clone, IdVal: IdTableValue> IdTable<Orig, IdVal, false>
-where
-    Orig: KeyFromRocks,
-    for<'v> &'v IdVal: AsRocksValue,
-    for<'k> &'k Orig: AsRocksKey,
-{
-    fn get_or_create_id_val(
-        &mut self,
-        db: &DBWithThreadMode<MultiThreaded>,
-        batch: &mut WriteBatch,
-        orig: &Orig,
-    ) -> Result<IdVal> {
-        let cf = db.cf_handle(&self.base.name).unwrap();
-        self.__get_or_create_id_val(&cf, db, batch, orig)
-    }
-}
 
 impl IdTableValue for DidIdValue {
     fn new(v: u64) -> Self {
@@ -249,10 +247,18 @@ impl IdTableValue for TargetId {
     }
 }
 
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_micros() as u64
+}
+
 impl RocksStorage {
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        Self::describe_metrics();
-        RocksStorage::open_readmode(path, false)
+        let me = RocksStorage::open_readmode(path, false)?;
+        me.global_init()?;
+        Ok(me)
     }
 
     pub fn open_readonly(path: impl AsRef<Path>) -> Result<Self> {
@@ -260,9 +266,11 @@ impl RocksStorage {
     }
 
     fn open_readmode(path: impl AsRef<Path>, readonly: bool) -> Result<Self> {
-        let did_id_table = IdTable::<_, _, true>::setup(DID_IDS_CF);
-        let target_id_table = IdTable::<_, _, false>::setup(TARGET_IDS_CF);
+        let did_id_table = IdTable::setup(DID_IDS_CF);
+        let target_id_table = IdTable::setup(TARGET_IDS_CF);
 
+        // note: global stuff like jetstream cursor goes in the default cf
+        // these are bonus extra cfs
         let cfs = vec![
             // id reference tables
             did_id_table.cf_descriptor(),
@@ -296,6 +304,23 @@ impl RocksStorage {
             is_writer: !readonly,
             backup_task: None.into(),
         })
+    }
+
+    fn global_init(&self) -> Result<()> {
+        if self.db.get(STARTED_AT_KEY)?.is_none() {
+            self.db.put(STARTED_AT_KEY, _rv(now()))?;
+        }
+        Ok(())
+    }
+
+    pub fn reset_start(&self) -> Result<bool> {
+        let existing = self.db.get(STARTED_AT_KEY)?;
+        if existing.is_none() {
+            bail!("not resetting started-at key because one wasn't set");
+        }
+        self.db.put(STARTED_AT_KEY, _rv(COZY_FIRST_CURSOR))?;
+        println!("started-at key reset to {COZY_FIRST_CURSOR}");
+        Ok(true)
     }
 
     pub fn start_backup(
@@ -392,29 +417,6 @@ impl RocksStorage {
             BackupEngine::open(&BackupEngineOptions::new(path)?, &rocksdb::Env::new()?)?;
         engine.purge_old_backups(num_backups_to_keep)?;
         Ok(())
-    }
-
-    fn describe_metrics() {
-        describe_histogram!(
-            "storage_rocksdb_read_seconds",
-            Unit::Seconds,
-            "duration of the read stage of actions"
-        );
-        describe_histogram!(
-            "storage_rocksdb_action_seconds",
-            Unit::Seconds,
-            "duration of read + write of actions"
-        );
-        describe_counter!(
-            "storage_rocksdb_batch_ops_total",
-            Unit::Count,
-            "total batched operations from actions"
-        );
-        describe_histogram!(
-            "storage_rocksdb_delete_account_ops",
-            Unit::Count,
-            "total batched ops for account deletions"
-        );
     }
 
     fn merge_op_extend_did_ids(
@@ -716,6 +718,8 @@ impl RocksStorage {
 impl Drop for RocksStorage {
     fn drop(&mut self) {
         if self.is_writer {
+            // TODO: cloning a writer is possible and currently breaks things
+            // (constellation code currently doesn't/shouldn't clone the writer)
             println!("rocksdb writer: cleaning up for shutdown...");
             if let Err(e) = self.db.flush_wal(true) {
                 eprintln!("rocks: flushing wal failed: {e:?}");
@@ -826,6 +830,166 @@ impl LinkStorage for RocksStorage {
 }
 
 impl LinkReader for RocksStorage {
+    fn get_many_to_many_counts(
+        &self,
+        target: &str,
+        collection: &str,
+        path: &str,
+        path_to_other: &str,
+        limit: u64,
+        after: Option<String>,
+        filter_link_dids: &HashSet<Did>,
+        filter_to_targets: &HashSet<String>,
+    ) -> Result<PagedOrderedCollection<(String, u64, u64), String>> {
+        let collection = Collection(collection.to_string());
+        let path = RPath(path.to_string());
+
+        let target_key = TargetKey(Target(target.to_string()), collection.clone(), path.clone());
+
+        // unfortunately the cursor is a, uh, stringified number.
+        // this was easier for the memstore (plain target, not target id), and
+        // making it generic is a bit awful.
+        // so... parse the number out of a string here :(
+        // TODO: this should bubble up to a BAD_REQUEST response
+        let after = after.map(|s| s.parse::<u64>().map(TargetId)).transpose()?;
+
+        let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? else {
+            return Ok(PagedOrderedCollection::empty());
+        };
+
+        let filter_did_ids: HashMap<DidId, bool> = filter_link_dids
+            .iter()
+            .filter_map(|did| self.did_id_table.get_id_val(&self.db, did).transpose())
+            .collect::<Result<Vec<DidIdValue>>>()?
+            .into_iter()
+            .map(|DidIdValue(id, active)| (id, active))
+            .collect();
+
+        // stored targets are keyed by triples of (target, collection, path).
+        // target filtering only consideres the target itself, so we actually
+        // need to do a prefix iteration of all target ids for this target and
+        // keep them all.
+        // i *think* the number of keys at a target prefix should usually be
+        // pretty small, so this is hopefully fine. but if it turns out to be
+        // large, we can push this filtering back into the main links loop and
+        // do forward db queries per backlink to get the raw target back out.
+        let mut filter_to_target_ids: HashSet<TargetId> = HashSet::new();
+        for t in filter_to_targets {
+            for (_, target_id) in self.iter_targets_for_target(&Target(t.to_string())) {
+                filter_to_target_ids.insert(target_id);
+            }
+        }
+
+        let linkers = self.get_target_linkers(&target_id)?;
+
+        let mut grouped_counts: BTreeMap<TargetId, (u64, HashSet<DidId>)> = BTreeMap::new();
+
+        for (did_id, rkey) in linkers.0 {
+            if did_id.is_empty() {
+                continue;
+            }
+
+            if !filter_did_ids.is_empty() && filter_did_ids.get(&did_id) != Some(&true) {
+                continue;
+            }
+
+            let record_link_key = RecordLinkKey(did_id, collection.clone(), rkey);
+            let Some(targets) = self.get_record_link_targets(&record_link_key)? else {
+                continue;
+            };
+
+            let Some(fwd_target) = targets
+                .0
+                .into_iter()
+                .filter_map(|RecordLinkTarget(rpath, target_id)| {
+                    if rpath.0 == path_to_other
+                        && (filter_to_target_ids.is_empty()
+                            || filter_to_target_ids.contains(&target_id))
+                    {
+                        Some(target_id)
+                    } else {
+                        None
+                    }
+                })
+                .take(1)
+                .next()
+            else {
+                continue;
+            };
+
+            // small relief: we page over target ids, so we can already bail
+            // reprocessing previous pages here
+            if after.as_ref().map(|a| fwd_target <= *a).unwrap_or(false) {
+                continue;
+            }
+
+            // aand we can skip target ids that must be on future pages
+            // (this check continues after the did-lookup, which we have to do)
+            let page_is_full = grouped_counts.len() as u64 > limit;
+            if page_is_full {
+                let current_max = grouped_counts.keys().next_back().unwrap();
+                if fwd_target > *current_max {
+                    continue;
+                }
+            }
+
+            // bit painful: 2-step lookup to make sure this did is active
+            let Some(did) = self.did_id_table.get_val_from_id(&self.db, did_id.0)? else {
+                eprintln!("failed to look up did from did_id {did_id:?}");
+                continue;
+            };
+            let Some(DidIdValue(_, active)) = self.did_id_table.get_id_val(&self.db, &did)? else {
+                eprintln!("failed to look up did_value from did_id {did_id:?}: {did:?}: data consistency bug?");
+                continue;
+            };
+            if !active {
+                continue;
+            }
+
+            // page-management, continued
+            // if we have a full page, and we're inserting a *new* key less than
+            // the current max, then we can evict the current max
+            let mut should_evict = false;
+            let entry = grouped_counts.entry(fwd_target).or_insert_with(|| {
+                // this is a *new* key, so kick the max if we're full
+                should_evict = page_is_full;
+                Default::default()
+            });
+            entry.0 += 1;
+            entry.1.insert(did_id);
+
+            if should_evict {
+                grouped_counts.pop_last();
+            }
+        }
+
+        // If we accumulated more than limit groups, there's another page.
+        // Pop the extra before building items so it doesn't appear in results.
+        let next = if grouped_counts.len() as u64 > limit {
+            grouped_counts.pop_last();
+            grouped_counts
+                .keys()
+                .next_back()
+                .map(|k| format!("{}", k.0))
+        } else {
+            None
+        };
+
+        let mut items: Vec<(String, u64, u64)> = Vec::with_capacity(grouped_counts.len());
+        for (target_id, (n, dids)) in &grouped_counts {
+            let Some(target) = self
+                .target_id_table
+                .get_val_from_id(&self.db, target_id.0)?
+            else {
+                eprintln!("failed to look up target from target_id {target_id:?}");
+                continue;
+            };
+            items.push((target.0 .0, *n, dids.len() as u64));
+        }
+
+        Ok(PagedOrderedCollection { items, next })
+    }
+
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
         let target_key = TargetKey(
             Target(target.to_string()),
@@ -853,13 +1017,182 @@ impl LinkReader for RocksStorage {
         }
     }
 
+    fn get_many_to_many(
+        &self,
+        target: &str,
+        collection: &str,
+        path: &str,
+        path_to_other: &str,
+        limit: u64,
+        after: Option<String>,
+        filter_link_dids: &HashSet<Did>,
+        filter_to_targets: &HashSet<String>,
+    ) -> Result<PagedOrderedCollection<ManyToManyItem, String>> {
+        // helper to resolve dids
+        let resolve_active_did = |did_id: &DidId| -> Result<Option<Did>> {
+            let Some(did) = self.did_id_table.get_val_from_id(&self.db, did_id.0)? else {
+                eprintln!("failed to look up did from did_id {did_id:?}");
+                return Ok(None);
+            };
+            let Some(DidIdValue(_, active)) = self.did_id_table.get_id_val(&self.db, &did)? else {
+                eprintln!("failed to look up did_value from did_id {did_id:?}: {did:?}: data consistency bug?");
+                return Ok(None);
+            };
+            Ok(active.then_some(did))
+        };
+
+        // setup variables that we need later
+        let collection = Collection(collection.to_string());
+        let path = RPath(path.to_string());
+
+        // extract parts form composite cursor
+        let cursor = match after {
+            Some(a) => {
+                let (b, f) = a.split_once(',').ok_or(anyhow!("invalid cursor format"))?;
+                let backlink_idx = b
+                    .parse::<u64>()
+                    .map_err(|e| anyhow!("invalid cursor.0: {e}"))?;
+                let other_link_idx = f
+                    .parse::<u64>()
+                    .map_err(|e| anyhow!("invalid cursor.1: {e}"))?;
+                Some(ManyToManyCursor {
+                    backlink_idx,
+                    other_link_idx,
+                })
+            }
+            None => None,
+        };
+
+        // (__active__) did ids and filter targets
+        let filter_did_ids: HashMap<DidId, bool> = filter_link_dids
+            .iter()
+            .filter_map(|did| self.did_id_table.get_id_val(&self.db, did).transpose())
+            .collect::<Result<Vec<DidIdValue>>>()?
+            .into_iter()
+            .map(|DidIdValue(id, active)| (id, active))
+            .collect();
+        let mut filter_to_target_ids: HashSet<TargetId> = HashSet::new();
+        for t in filter_to_targets {
+            for (_, target_id) in self.iter_targets_for_target(&Target(t.to_string())) {
+                filter_to_target_ids.insert(target_id);
+            }
+        }
+
+        let target_key = TargetKey(Target(target.to_string()), collection.clone(), path);
+        let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? else {
+            eprintln!("Target not found for {target_key:?}");
+            return Ok(PagedOrderedCollection::empty());
+        };
+        let linkers = self.get_target_linkers(&target_id)?;
+
+        let mut items: Vec<(usize, usize, ManyToManyItem)> = Vec::new();
+
+        // iterate backlinks (who linked to the target?)
+        for (backlink_idx, (did_id, rkey)) in
+            linkers
+                .0
+                .iter()
+                .enumerate()
+                .skip_while(|(backlink_idx, _)| {
+                    cursor.is_some_and(|c| *backlink_idx < c.backlink_idx as usize)
+                })
+        {
+            if did_id.is_empty()
+                || (!filter_did_ids.is_empty() && !filter_did_ids.contains_key(did_id))
+            {
+                continue;
+            }
+
+            let Some(links) = self.get_record_link_targets(&RecordLinkKey(
+                *did_id,
+                collection.clone(),
+                rkey.clone(),
+            ))?
+            else {
+                continue;
+            };
+
+            // iterate fwd links (which of these links point to the "other" target?)
+            for (other_link_idx, RecordLinkTarget(_, fwd_target_id)) in links
+                .0
+                .into_iter()
+                .enumerate()
+                .filter(|(_, RecordLinkTarget(rpath, target_id))| {
+                    rpath.0 == path_to_other
+                        && (filter_to_target_ids.is_empty()
+                            || filter_to_target_ids.contains(target_id))
+                })
+                .skip_while(|(other_link_idx, _)| {
+                    cursor.is_some_and(|c| {
+                        backlink_idx == c.backlink_idx as usize
+                            && *other_link_idx <= c.other_link_idx as usize
+                    })
+                })
+                .take(limit as usize + 1 - items.len())
+            {
+                // extract forward target did (target that links to the __other__ target)
+                let Some(did) = resolve_active_did(did_id)? else {
+                    continue;
+                };
+                // resolve to target string
+                let Some(fwd_target_key) = self
+                    .target_id_table
+                    .get_val_from_id(&self.db, fwd_target_id.0)?
+                else {
+                    continue;
+                };
+
+                // link to be added
+                let record_id = RecordId {
+                    did,
+                    collection: collection.0.clone(),
+                    rkey: rkey.0.clone(),
+                };
+                let item = ManyToManyItem {
+                    link_record: record_id,
+                    other_subject: fwd_target_key.0 .0,
+                };
+                items.push((backlink_idx, other_link_idx, item));
+            }
+
+            // page full - eject
+            if items.len() > limit as usize {
+                break;
+            }
+        }
+
+        // We collect up to limit + 1 fully-resolved items. If we got more than
+        // limit, there are more results beyond this page. We truncate to limit
+        // items (the actual page) and build a composite cursor from the last
+        // item on the page — a base64-encoded pair of (backlink_vec_idx,
+        // forward_link_idx). On the next request, skip_while advances past
+        // this position: backlinks before backlink_vec_idx are skipped entirely,
+        // and at backlink_vec_idx itself, forward links at or before
+        // forward_link_idx are skipped. This correctly resumes mid-record when
+        // a single backlinker has multiple forward links at path_to_other.
+        let next = (items.len() > limit as usize).then(|| {
+            let (b, o, _) = items[limit as usize - 1];
+            format!("{b},{o}")
+        });
+
+        let items = items
+            .into_iter()
+            .take(limit as usize)
+            .map(|(_, _, item)| item)
+            .collect();
+
+        Ok(PagedOrderedCollection { items, next })
+    }
+
     fn get_links(
         &self,
         target: &str,
         collection: &str,
         path: &str,
+        order: Order,
         limit: u64,
         until: Option<u64>,
+        filter_dids: &HashSet<Did>,
     ) -> Result<PagedAppendingCollection<RecordId>> {
         let target_key = TargetKey(
             Target(target.to_string()),
@@ -868,23 +1201,55 @@ impl LinkReader for RocksStorage {
         );
 
         let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? else {
-            return Ok(PagedAppendingCollection {
-                version: (0, 0),
-                items: Vec::new(),
-                next: None,
-                total: 0,
-            });
+            return Ok(PagedAppendingCollection::empty());
         };
 
-        let linkers = self.get_target_linkers(&target_id)?;
+        let mut linkers = self.get_target_linkers(&target_id)?;
+        if !filter_dids.is_empty() {
+            let mut did_filter = HashSet::new();
+            for did in filter_dids {
+                let Some(DidIdValue(did_id, active)) =
+                    self.did_id_table.get_id_val(&self.db, did)?
+                else {
+                    eprintln!("failed to find a did_id for {did:?}");
+                    continue;
+                };
+                if !active {
+                    eprintln!("excluding inactive did from filtered results");
+                    continue;
+                }
+                did_filter.insert(did_id);
+            }
+            linkers.0.retain(|linker| did_filter.contains(&linker.0));
+        }
 
         let (alive, gone) = linkers.count();
         let total = alive + gone;
-        let end = until.map(|u| std::cmp::min(u, total)).unwrap_or(total) as usize;
-        let begin = end.saturating_sub(limit as usize);
-        let next = if begin == 0 { None } else { Some(begin as u64) };
 
-        let did_id_rkeys = linkers.0[begin..end].iter().rev().collect::<Vec<_>>();
+        let (start, take, next_until) = match order {
+            // OldestToNewest: start from the beginning, paginate forward
+            Order::OldestToNewest => {
+                let start = until.unwrap_or(0);
+                let next = start + limit + 1;
+                let next_until = if next < total { Some(next) } else { None };
+                (start, limit, next_until)
+            }
+            // NewestToOldest: start from the end, paginate backward
+            Order::NewestToOldest => {
+                let until = until.unwrap_or(total);
+                match until.checked_sub(limit) {
+                    Some(s) if s > 0 => (s, limit, Some(s)),
+                    Some(s) => (s, limit, None),
+                    None => (0, until, None),
+                }
+            }
+        };
+
+        let did_id_rkeys = linkers.0.iter().skip(start as usize).take(take as usize);
+        let did_id_rkeys: Vec<_> = match order {
+            Order::OldestToNewest => did_id_rkeys.collect(),
+            Order::NewestToOldest => did_id_rkeys.rev().collect(),
+        };
 
         let mut items = Vec::with_capacity(did_id_rkeys.len());
         // TODO: use get-many (or multi-get or whatever it's called)
@@ -914,7 +1279,7 @@ impl LinkReader for RocksStorage {
         Ok(PagedAppendingCollection {
             version: (total, gone),
             items,
-            next,
+            next: next_until,
             total: alive,
         })
     }
@@ -934,23 +1299,23 @@ impl LinkReader for RocksStorage {
         );
 
         let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? else {
-            return Ok(PagedAppendingCollection {
-                version: (0, 0),
-                items: Vec::new(),
-                next: None,
-                total: 0,
-            });
+            return Ok(PagedAppendingCollection::empty());
         };
 
         let linkers = self.get_distinct_target_linkers(&target_id)?;
 
         let (alive, gone) = linkers.count();
         let total = alive + gone;
-        let end = until.map(|u| std::cmp::min(u, total)).unwrap_or(total) as usize;
-        let begin = end.saturating_sub(limit as usize);
-        let next = if begin == 0 { None } else { Some(begin as u64) };
 
-        let did_id_rkeys = linkers.0[begin..end].iter().rev().collect::<Vec<_>>();
+        let until = until.unwrap_or(total);
+        let (start, take, next_until) = match until.checked_sub(limit) {
+            Some(s) if s > 0 => (s, limit, Some(s)),
+            Some(s) => (s, limit, None),
+            None => (0, until, None),
+        };
+
+        let did_id_rkeys = linkers.0.iter().skip(start as usize).take(take as usize);
+        let did_id_rkeys: Vec<_> = did_id_rkeys.rev().collect();
 
         let mut items = Vec::with_capacity(did_id_rkeys.len());
         // TODO: use get-many (or multi-get or whatever it's called)
@@ -976,7 +1341,7 @@ impl LinkReader for RocksStorage {
         Ok(PagedAppendingCollection {
             version: (total, gone),
             items,
-            next,
+            next: next_until,
             total: alive,
         })
     }
@@ -1024,10 +1389,39 @@ impl LinkReader for RocksStorage {
             .map(|s| s.parse::<u64>())
             .transpose()?
             .unwrap_or(0);
+        let started_at = self
+            .db
+            .get(STARTED_AT_KEY)?
+            .map(|c| _vr(&c))
+            .transpose()?
+            .unwrap_or(COZY_FIRST_CURSOR);
+
+        let other_data = self
+            .db
+            .get(TARGET_ID_REPAIR_STATE_KEY)?
+            .map(|s| _vr(&s))
+            .transpose()?
+            .map(
+                |TargetIdRepairState {
+                     current_us_started_at,
+                     id_when_started,
+                     latest_repaired_i,
+                 }| {
+                    HashMap::from([
+                        ("current_us_started_at".to_string(), current_us_started_at),
+                        ("id_when_started".to_string(), id_when_started),
+                        ("latest_repaired_i".to_string(), latest_repaired_i),
+                    ])
+                },
+            )
+            .unwrap_or(HashMap::default());
+
         Ok(StorageStats {
             dids,
             targetables,
             linking_records,
+            started_at: Some(started_at),
+            other_data,
         })
     }
 }
@@ -1053,6 +1447,10 @@ impl AsRocksKeyPrefix<TargetKey> for &TargetIdTargetPrefix {}
 impl AsRocksValue for &TargetId {}
 impl KeyFromRocks for TargetKey {}
 impl ValueFromRocks for TargetId {}
+
+// temp?
+impl KeyFromRocks for TargetId {}
+impl AsRocksValue for &TargetKey {}
 
 // target_links table
 impl AsRocksKey for &TargetId {}
@@ -1124,10 +1522,10 @@ impl DidIdValue {
 }
 
 // target ids
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialOrd, Ord, PartialEq, Eq, Hash)]
 struct TargetId(u64); // key
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Target(pub String); // the actual target/uri
 
 // targets (uris, dids, etc.): the reverse index
@@ -1192,7 +1590,7 @@ impl RecordLinkTargets {
 mod tests {
     use super::super::ActionableEvent;
     use super::*;
-    use links::Link;
+    use microcosm_links::Link;
     use tempfile::tempdir;
 
     #[test]
@@ -1290,4 +1688,35 @@ mod tests {
     }
 
     // TODO: add tests for key prefixes actually prefixing (bincode encoding _should_...)
+
+    #[test]
+    fn rocks_started_at_persists_across_opens() -> Result<()> {
+        let dir = tempdir()?;
+
+        let mut store = RocksStorage::new(dir.path())?;
+        store.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "a.b.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("e.com".into()),
+                    path: ".uri".into(),
+                }],
+            },
+            0,
+        )?;
+        let first = store.get_stats()?.started_at;
+        drop(store);
+
+        std::thread::sleep(Duration::from_millis(5));
+
+        let store = RocksStorage::new(dir.path())?;
+        let second = store.get_stats()?.started_at;
+
+        assert_eq!(first, second, "STARTED_AT must not change across opens");
+        Ok(())
+    }
 }

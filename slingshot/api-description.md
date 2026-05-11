@@ -1,7 +1,7 @@
 _A [gravitational slingshot](https://en.wikipedia.org/wiki/Gravity_assist) makes use of the gravity and relative movements of celestial bodies to accelerate a spacecraft and change its trajectory._
 
 
-# Slingshot: edge record cache
+# Slingshot: edge record and identity cache
 
 Applications in [ATProtocol](https://atproto.com/) store data in users' own [PDS](https://atproto.com/guides/self-hosting) (Personal Data Server), which are distributed across thousands of independently-run servers all over the world. Trying to access this data poses challenges for client applications:
 
@@ -90,4 +90,4 @@ Slingshot excels when combined with _shallow indexing_ services, which offer fas
 - [🎇 Spacedust](https://spacedust.microcosm.blue/), a firehose of all social interactions
 
 > [!success]
-> All microcosm projects are [open source](https://tangled.sh/@bad-example.com/microcosm-links). **You can help sustain Slingshot** and all of microcosm by becoming a [Github sponsor](https://github.com/sponsors/uniphil/) or a [Ko-fi supporter](https://ko-fi.com/bad_example)!
+> All microcosm projects are [open source](https://tangled.org/bad-example.com/microcosm-links). **You can help sustain Slingshot** and all of microcosm by becoming a [Github sponsor](https://github.com/sponsors/uniphil/) or a [Ko-fi supporter](https://ko-fi.com/bad_example)!

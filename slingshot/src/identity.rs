@@ -11,7 +11,7 @@ use std::sync::Arc;
 /// 1. handle -> DID resolution: getRecord must accept a handle for `repo` param
 /// 2. DID -> PDS resolution: so we know where to getRecord
 /// 3. DID -> handle resolution: for bidirectional handle validation and in case we want to offer this
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -26,7 +26,10 @@ use atrium_identity::{
     handle::{AtprotoHandleResolver, AtprotoHandleResolverConfig, DnsTxtResolver},
 };
 use atrium_oauth::DefaultHttpClient; // it's probably not worth bringing all of atrium_oauth for this but
-use foyer::{DirectFsDeviceOptions, Engine, HybridCache, HybridCacheBuilder};
+use foyer::{
+    BlockEngineConfig, DeviceBuilder, FsDeviceBuilder, HybridCache, HybridCacheBuilder,
+    PsyncIoEngineConfig,
+};
 use serde::{Deserialize, Serialize};
 use time::UtcDateTime;
 
@@ -35,9 +38,19 @@ const MIN_TTL: Duration = Duration::from_secs(4 * 3600); // probably shoudl have
 const MIN_NOT_FOUND_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-enum IdentityKey {
+pub enum IdentityKey {
     Handle(Handle),
     Did(Did),
+}
+
+impl IdentityKey {
+    fn weight(&self) -> usize {
+        let s = match self {
+            IdentityKey::Handle(h) => h.as_str(),
+            IdentityKey::Did(d) => d.as_str(),
+        };
+        std::mem::size_of::<Self>() + std::mem::size_of_val(s)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -48,6 +61,22 @@ enum IdentityData {
     NotFound,
     Did(Did),
     Doc(PartialMiniDoc),
+}
+
+impl IdentityVal {
+    fn weight(&self) -> usize {
+        let wrapping = std::mem::size_of::<Self>();
+        let inner = match &self.1 {
+            IdentityData::NotFound => 0,
+            IdentityData::Did(d) => std::mem::size_of_val(d.as_str()),
+            IdentityData::Doc(d) => {
+                std::mem::size_of_val(d.unverified_handle.as_str())
+                    + std::mem::size_of_val(d.pds.as_str())
+                    + std::mem::size_of_val(d.signing_key.as_str())
+            }
+        };
+        wrapping + inner
+    }
 }
 
 /// partial representation of a com.bad-example.identity mini atproto doc
@@ -86,7 +115,7 @@ impl TryFrom<DidDocument> for PartialMiniDoc {
             let Some(maybe_handle) = aka.strip_prefix("at://") else {
                 continue;
             };
-            let Ok(valid_handle) = Handle::new(maybe_handle.to_string()) else {
+            let Ok(valid_handle) = Handle::new(maybe_handle.to_lowercase()) else {
                 continue;
             };
             unverified_handle = Some(valid_handle);
@@ -157,11 +186,15 @@ pub struct Identity {
     /// multi-producer *single consumer* queue
     refresh_queue: Arc<Mutex<RefreshQueue>>,
     /// just a lock to ensure only one refresher (queue consumer) is running (to be improved with a better refresher)
-    refresher: Arc<Mutex<()>>,
+    refresher_task: Arc<Mutex<()>>,
 }
 
 impl Identity {
-    pub async fn new(cache_dir: impl AsRef<Path>) -> Result<Self, IdentityError> {
+    pub async fn new(
+        cache_dir: impl AsRef<Path>,
+        memory_mb: usize,
+        disk_gb: usize,
+    ) -> Result<Self, IdentityError> {
         let http_client = Arc::new(DefaultHttpClient::default());
         let handle_resolver = AtprotoHandleResolver::new(AtprotoHandleResolverConfig {
             dns_txt_resolver: HickoryDnsTxtResolver::new().unwrap(),
@@ -172,16 +205,18 @@ impl Identity {
             http_client: http_client.clone(),
         });
 
+        let device = FsDeviceBuilder::new(cache_dir)
+            .with_capacity(disk_gb * 2_usize.pow(30))
+            .build()?;
+        let engine = BlockEngineConfig::new(device).with_block_size(2_usize.pow(20)); // note: this does limit the max cached item size
+
         let cache = HybridCacheBuilder::new()
             .with_name("identity")
-            .memory(16 * 2_usize.pow(20))
-            .with_weighter(|k, v| std::mem::size_of_val(k) + std::mem::size_of_val(v))
-            .storage(Engine::small())
-            .with_device_options(
-                DirectFsDeviceOptions::new(cache_dir)
-                    .with_capacity(2_usize.pow(30)) // TODO: configurable (1GB to have something)
-                    .with_file_size(2_usize.pow(20)), // note: this does limit the max cached item size, warning jumbo records
-            )
+            .memory(memory_mb * 2_usize.pow(20))
+            .with_weighter(|k: &IdentityKey, v: &IdentityVal| k.weight() + v.weight())
+            .storage()
+            .with_io_engine_config(PsyncIoEngineConfig::default())
+            .with_engine_config(engine)
             .build()
             .await?;
 
@@ -190,7 +225,7 @@ impl Identity {
             did_resolver: Arc::new(did_resolver),
             cache,
             refresh_queue: Default::default(),
-            refresher: Default::default(),
+            refresher_task: Default::default(),
         })
     }
 
@@ -229,22 +264,31 @@ impl Identity {
         handle: &Handle,
     ) -> Result<Option<Did>, IdentityError> {
         let key = IdentityKey::Handle(handle.clone());
+        metrics::counter!("slingshot_get_handle").increment(1);
         let entry = self
             .cache
-            .fetch(key.clone(), {
+            .get_or_fetch(&key, {
                 let handle = handle.clone();
                 let resolver = self.handle_resolver.clone();
                 || async move {
-                    match resolver.resolve(&handle).await {
-                        Ok(did) => Ok(IdentityVal(UtcDateTime::now(), IdentityData::Did(did))),
-                        Err(atrium_identity::Error::NotFound) => {
-                            Ok(IdentityVal(UtcDateTime::now(), IdentityData::NotFound))
-                        }
-                        Err(other) => Err(foyer::Error::Other(Box::new({
+                    let t0 = Instant::now();
+                    let (res, success) = match resolver.resolve(&handle).await {
+                        Ok(did) => (
+                            Ok(IdentityVal(UtcDateTime::now(), IdentityData::Did(did))),
+                            "true",
+                        ),
+                        Err(atrium_identity::Error::NotFound) => (
+                            Ok(IdentityVal(UtcDateTime::now(), IdentityData::NotFound)),
+                            "false",
+                        ),
+                        Err(other) => {
                             log::debug!("other error resolving handle: {other:?}");
-                            IdentityError::ResolutionFailed(other)
-                        }))),
-                    }
+                            (Err(IdentityError::ResolutionFailed(other)), "false")
+                        }
+                    };
+                    metrics::histogram!("slingshot_fetch_handle", "success" => success)
+                        .record(t0.elapsed());
+                    res
                 }
             })
             .await?;
@@ -258,12 +302,14 @@ impl Identity {
             }
             IdentityData::NotFound => {
                 if (now - *last_fetch) >= MIN_NOT_FOUND_TTL {
+                    metrics::counter!("identity_handle_refresh_queued", "reason" => "ttl", "found" => "false").increment(1);
                     self.queue_refresh(key).await;
                 }
                 Ok(None)
             }
             IdentityData::Did(did) => {
                 if (now - *last_fetch) >= MIN_TTL {
+                    metrics::counter!("identity_handle_refresh_queued", "reason" => "ttl", "found" => "true").increment(1);
                     self.queue_refresh(key).await;
                 }
                 Ok(Some(did.clone()))
@@ -277,34 +323,38 @@ impl Identity {
         did: &Did,
     ) -> Result<Option<PartialMiniDoc>, IdentityError> {
         let key = IdentityKey::Did(did.clone());
+        metrics::counter!("slingshot_get_did_doc").increment(1);
         let entry = self
             .cache
-            .fetch(key.clone(), {
+            .get_or_fetch(&key, {
                 let did = did.clone();
                 let resolver = self.did_resolver.clone();
                 || async move {
-                    match resolver.resolve(&did).await {
-                        Ok(did_doc) => {
+                    let t0 = Instant::now();
+                    let (res, success) = match resolver.resolve(&did).await {
+                        Ok(did_doc) if did_doc.id != did.to_string() => (
                             // TODO: fix in atrium: should verify id is did
-                            if did_doc.id != did.to_string() {
-                                return Err(foyer::Error::other(Box::new(
-                                    IdentityError::BadDidDoc(
-                                        "did doc's id did not match did".to_string(),
-                                    ),
-                                )));
-                            }
-                            let mini_doc = did_doc.try_into().map_err(|e| {
-                                foyer::Error::Other(Box::new(IdentityError::BadDidDoc(e)))
-                            })?;
-                            Ok(IdentityVal(UtcDateTime::now(), IdentityData::Doc(mini_doc)))
-                        }
-                        Err(atrium_identity::Error::NotFound) => {
-                            Ok(IdentityVal(UtcDateTime::now(), IdentityData::NotFound))
-                        }
-                        Err(other) => Err(foyer::Error::Other(Box::new(
-                            IdentityError::ResolutionFailed(other),
-                        ))),
-                    }
+                            Err(IdentityError::BadDidDoc(
+                                "did doc's id did not match did".to_string(),
+                            )),
+                            "false",
+                        ),
+                        Ok(did_doc) => match did_doc.try_into() {
+                            Ok(mini_doc) => (
+                                Ok(IdentityVal(UtcDateTime::now(), IdentityData::Doc(mini_doc))),
+                                "true",
+                            ),
+                            Err(e) => (Err(IdentityError::BadDidDoc(e)), "false"),
+                        },
+                        Err(atrium_identity::Error::NotFound) => (
+                            Ok(IdentityVal(UtcDateTime::now(), IdentityData::NotFound)),
+                            "false",
+                        ),
+                        Err(other) => (Err(IdentityError::ResolutionFailed(other)), "false"),
+                    };
+                    metrics::histogram!("slingshot_fetch_did_doc", "success" => success)
+                        .record(t0.elapsed());
+                    res
                 }
             })
             .await?;
@@ -318,12 +368,14 @@ impl Identity {
             }
             IdentityData::NotFound => {
                 if (now - *last_fetch) >= MIN_NOT_FOUND_TTL {
+                    metrics::counter!("identity_did_refresh_queued", "reason" => "ttl", "found" => "false").increment(1);
                     self.queue_refresh(key).await;
                 }
                 Ok(None)
             }
             IdentityData::Doc(mini_did) => {
                 if (now - *last_fetch) >= MIN_TTL {
+                    metrics::counter!("identity_did_refresh_queued", "reason" => "ttl", "found" => "true").increment(1);
                     self.queue_refresh(key).await;
                 }
                 Ok(Some(mini_did.clone()))
@@ -334,7 +386,7 @@ impl Identity {
     /// put a refresh task on the queue
     ///
     /// this can be safely called from multiple concurrent tasks
-    async fn queue_refresh(&self, key: IdentityKey) {
+    pub async fn queue_refresh(&self, key: IdentityKey) {
         // todo: max queue size
         let mut q = self.refresh_queue.lock().await;
         if !q.items.contains(&key) {
@@ -411,7 +463,7 @@ impl Identity {
     /// run the refresh queue consumer
     pub async fn run_refresher(&self, shutdown: CancellationToken) -> Result<(), IdentityError> {
         let _guard = self
-            .refresher
+            .refresher_task
             .try_lock()
             .expect("there to only be one refresher running");
         loop {
@@ -433,18 +485,22 @@ impl Identity {
                     log::trace!("refreshing handle {handle:?}");
                     match self.handle_resolver.resolve(handle).await {
                         Ok(did) => {
+                            metrics::counter!("identity_handle_refresh", "success" => "true")
+                                .increment(1);
                             self.cache.insert(
                                 task_key.clone(),
                                 IdentityVal(UtcDateTime::now(), IdentityData::Did(did)),
                             );
                         }
                         Err(atrium_identity::Error::NotFound) => {
+                            metrics::counter!("identity_handle_refresh", "success" => "false", "reason" => "not found").increment(1);
                             self.cache.insert(
                                 task_key.clone(),
                                 IdentityVal(UtcDateTime::now(), IdentityData::NotFound),
                             );
                         }
                         Err(err) => {
+                            metrics::counter!("identity_handle_refresh", "success" => "false", "reason" => "other").increment(1);
                             log::warn!(
                                 "failed to refresh handle: {err:?}. leaving stale (should we eventually do something?)"
                             );
@@ -459,6 +515,7 @@ impl Identity {
                         Ok(did_doc) => {
                             // TODO: fix in atrium: should verify id is did
                             if did_doc.id != did.to_string() {
+                                metrics::counter!("identity_did_refresh", "success" => "false", "reason" => "wrong did").increment(1);
                                 log::warn!(
                                     "refreshed did doc failed: wrong did doc id. dropping refresh."
                                 );
@@ -467,24 +524,29 @@ impl Identity {
                             let mini_doc = match did_doc.try_into() {
                                 Ok(md) => md,
                                 Err(e) => {
+                                    metrics::counter!("identity_did_refresh", "success" => "false", "reason" => "bad doc").increment(1);
                                     log::warn!(
                                         "converting mini doc failed: {e:?}. dropping refresh."
                                     );
                                     continue;
                                 }
                             };
+                            metrics::counter!("identity_did_refresh", "success" => "true")
+                                .increment(1);
                             self.cache.insert(
                                 task_key.clone(),
                                 IdentityVal(UtcDateTime::now(), IdentityData::Doc(mini_doc)),
                             );
                         }
                         Err(atrium_identity::Error::NotFound) => {
+                            metrics::counter!("identity_did_refresh", "success" => "false", "reason" => "not found").increment(1);
                             self.cache.insert(
                                 task_key.clone(),
                                 IdentityVal(UtcDateTime::now(), IdentityData::NotFound),
                             );
                         }
                         Err(err) => {
+                            metrics::counter!("identity_did_refresh", "success" => "false", "reason" => "other").increment(1);
                             log::warn!(
                                 "failed to refresh did doc: {err:?}. leaving stale (should we eventually do something?)"
                             );

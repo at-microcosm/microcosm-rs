@@ -30,6 +30,8 @@ pub enum SubscriberUpdateError {
     TooManySourcesWanted,
     #[error("more wantedSubjectDids were requested than allowed (max 10,000)")]
     TooManyDidsWanted,
+    #[error("more wantedSubjectPrefixes were requested than allowed (max 100)")]
+    TooManySubjectPrefixesWanted,
     #[error("more wantedSubjects were requested than allowed (max 50,000)")]
     TooManySubjectsWanted,
 }

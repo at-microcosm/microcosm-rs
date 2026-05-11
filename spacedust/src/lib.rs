@@ -6,7 +6,7 @@ pub mod server;
 pub mod subscriber;
 
 use jetstream::events::CommitEvent;
-use links::CollectedLink;
+use microcosm_links::CollectedLink;
 use serde::{Deserialize, Serialize};
 use server::MultiSubscribeQuery;
 use tokio_tungstenite::tungstenite::Message;

@@ -268,10 +268,10 @@ async fn prompt(
             Some(parent_host),
         );
     }
-    if let Some(ref app) = params.app {
-        if !allowed_hosts.contains(app) {
-            return err("Login is not allowed for this app", false, Some(app));
-        }
+    if let Some(ref app) = params.app
+        && !allowed_hosts.contains(app)
+    {
+        return err("Login is not allowed for this app", false, Some(app));
     }
     let parent_origin = url.origin().ascii_serialization();
     if parent_origin == "null" {

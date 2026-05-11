@@ -8,12 +8,12 @@ atrium-api = { git = "https://github.com/uniphil/atrium.git", branch = "fix/reso
 atrium-common = { git = "https://github.com/uniphil/atrium.git", branch = "fix/resolve-handle-https-accept-whitespace" }
 atrium-identity = { git = "https://github.com/uniphil/atrium.git", branch = "fix/resolve-handle-https-accept-whitespace" }
 atrium-oauth = { git = "https://github.com/uniphil/atrium.git", branch = "fix/resolve-handle-https-accept-whitespace" }
-clap = { version = "4.5.41", features = ["derive"] }
+clap = { workspace = true }
 ctrlc = "3.4.7"
-foyer = { version = "0.18.0", features = ["serde"] }
+foyer = { version = "0.22.3", features = ["serde"] }
 hickory-resolver = "0.25.2"
 jetstream = { path = "../jetstream", features = ["metrics"] }
-links = { path = "../links" }
+microcosm-links = { path = "../links" }
 log = "0.4.27"
 metrics = "0.24.2"
 metrics-exporter-prometheus = { version = "0.17.1", features = ["http-listener"] }
@@ -24,7 +24,7 @@ rustls = "0.23.31"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.141", features = ["raw_value"] }
 thiserror = "2.0.12"
-time = { version = "0.3.41", features = ["serde"] }
+time = { version = "0.3.47", features = ["serde"] }
 tokio = { version = "1.47.0", features = ["full"] }
 tokio-util = "0.7.15"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }

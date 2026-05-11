@@ -1,7 +1,7 @@
-use crate::{ActionableEvent, CountsByCount, Did, RecordId};
+use crate::{ActionableEvent, CountsByCount, Did, ManyToManyItem, RecordId};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub mod mem_store;
 pub use mem_store::MemStorage;
@@ -11,12 +11,58 @@ pub mod rocks_store;
 #[cfg(feature = "rocks")]
 pub use rocks_store::RocksStorage;
 
-#[derive(Debug, PartialEq)]
+/// Ordering for paginated link queries
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Order {
+    /// Newest links first (default)
+    NewestToOldest,
+    /// Oldest links first
+    OldestToNewest,
+}
+
+#[derive(Debug, Default, PartialEq)]
 pub struct PagedAppendingCollection<T> {
     pub version: (u64, u64), // (collection length, deleted item count) // TODO: change to (total, active)? since dedups isn't "deleted"
     pub items: Vec<T>,
     pub next: Option<u64>,
     pub total: u64,
+}
+
+impl<T> PagedAppendingCollection<T> {
+    pub(crate) fn empty() -> Self {
+        Self {
+            version: (0, 0),
+            items: Vec::new(),
+            next: None,
+            total: 0,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+struct ManyToManyCursor {
+    backlink_idx: u64,
+    other_link_idx: u64,
+}
+
+/// A paged collection whose keys are sorted instead of indexed
+///
+/// this has weaker guarantees than PagedAppendingCollection: it might
+/// return a totally consistent snapshot. but it should avoid duplicates
+/// and each page should at least be internally consistent.
+#[derive(Debug, PartialEq)]
+pub struct PagedOrderedCollection<T, K: Ord> {
+    pub items: Vec<T>,
+    pub next: Option<K>,
+}
+
+impl<T, K: Ord> PagedOrderedCollection<T, K> {
+    pub(crate) fn empty() -> Self {
+        Self {
+            items: Vec::new(),
+            next: None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
@@ -33,6 +79,12 @@ pub struct StorageStats {
     /// records with multiple links are single-counted.
     /// for LSM stores, deleted links don't decrement this, and updated records with any links will likely increment it.
     pub linking_records: u64,
+
+    /// first jetstream cursor when this instance first started
+    pub started_at: Option<u64>,
+
+    /// anything else we want to throw in
+    pub other_data: HashMap<String, u64>,
 }
 
 pub trait LinkStorage: Send + Sync {
@@ -48,17 +100,33 @@ pub trait LinkStorage: Send + Sync {
 }
 
 pub trait LinkReader: Clone + Send + Sync + 'static {
+    #[allow(clippy::too_many_arguments)]
+    fn get_many_to_many_counts(
+        &self,
+        target: &str,
+        collection: &str,
+        path: &str,
+        path_to_other: &str,
+        limit: u64,
+        after: Option<String>,
+        filter_dids: &HashSet<Did>,
+        filter_to_targets: &HashSet<String>,
+    ) -> Result<PagedOrderedCollection<(String, u64, u64), String>>;
+
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64>;
 
     fn get_distinct_did_count(&self, target: &str, collection: &str, path: &str) -> Result<u64>;
 
+    #[allow(clippy::too_many_arguments)]
     fn get_links(
         &self,
         target: &str,
         collection: &str,
         path: &str,
+        order: Order,
         limit: u64,
         until: Option<u64>,
+        filter_dids: &HashSet<Did>,
     ) -> Result<PagedAppendingCollection<RecordId>>;
 
     fn get_distinct_dids(
@@ -73,6 +141,19 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
     fn get_all_record_counts(&self, _target: &str)
         -> Result<HashMap<String, HashMap<String, u64>>>;
 
+    #[allow(clippy::too_many_arguments)]
+    fn get_many_to_many(
+        &self,
+        target: &str,
+        collection: &str,
+        path: &str,
+        path_to_other: &str,
+        limit: u64,
+        after: Option<String>,
+        filter_dids: &HashSet<Did>,
+        filter_to_targets: &HashSet<String>,
+    ) -> Result<PagedOrderedCollection<ManyToManyItem, String>>;
+
     fn get_all_counts(
         &self,
         _target: &str,
@@ -85,7 +166,7 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use links::{CollectedLink, Link};
+    use microcosm_links::{CollectedLink, Link};
     use std::ops::RangeBounds;
 
     macro_rules! test_each_storage {
@@ -145,22 +226,20 @@ mod tests {
         );
         assert_eq!(storage.get_distinct_did_count("", "", "")?, 0);
         assert_eq!(
-            storage.get_links("a.com", "app.t.c", ".abc.uri", 100, None)?,
-            PagedAppendingCollection {
-                version: (0, 0),
-                items: vec![],
-                next: None,
-                total: 0,
-            }
+            storage.get_links(
+                "a.com",
+                "app.t.c",
+                ".abc.uri",
+                Order::NewestToOldest,
+                100,
+                None,
+                &HashSet::default()
+            )?,
+            PagedAppendingCollection::empty()
         );
         assert_eq!(
             storage.get_distinct_dids("a.com", "app.t.c", ".abc.uri", 100, None)?,
-            PagedAppendingCollection {
-                version: (0, 0),
-                items: vec![],
-                next: None,
-                total: 0,
-            }
+            PagedAppendingCollection::empty()
         );
         assert_eq!(storage.get_all_counts("bad-example.com")?, HashMap::new());
         assert_eq!(
@@ -641,7 +720,15 @@ mod tests {
             0,
         )?;
         assert_eq!(
-            storage.get_links("a.com", "app.t.c", ".abc.uri", 100, None)?,
+            storage.get_links(
+                "a.com",
+                "app.t.c",
+                ".abc.uri",
+                Order::NewestToOldest,
+                100,
+                None,
+                &HashSet::default()
+            )?,
             PagedAppendingCollection {
                 version: (1, 0),
                 items: vec![RecordId {
@@ -682,8 +769,172 @@ mod tests {
                 0,
             )?;
         }
-        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, None)?;
-        let dids = storage.get_distinct_dids("a.com", "app.t.c", ".abc.uri", 2, None)?;
+
+        let sub = "a.com";
+        let col = "app.t.c";
+        let path = ".abc.uri";
+        let order = Order::NewestToOldest;
+        let dids_filter = HashSet::new();
+
+        // --- --- round one! --- --- //
+        // all backlinks
+        let links = storage.get_links(sub, col, path, order, 2, None, &dids_filter)?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (5, 0),
+                items: vec![
+                    RecordId {
+                        did: "did:plc:asdf-5".into(),
+                        collection: col.into(),
+                        rkey: "asdf".into(),
+                    },
+                    RecordId {
+                        did: "did:plc:asdf-4".into(),
+                        collection: col.into(),
+                        rkey: "asdf".into(),
+                    },
+                ],
+                next: Some(3),
+                total: 5,
+            }
+        );
+        // distinct dids
+        let dids = storage.get_distinct_dids(sub, col, path, 2, None)?;
+        assert_eq!(
+            dids,
+            PagedAppendingCollection {
+                version: (5, 0),
+                items: vec!["did:plc:asdf-5".into(), "did:plc:asdf-4".into()],
+                next: Some(3),
+                total: 5,
+            }
+        );
+
+        // --- --- round two! --- --- //
+        // all backlinks
+        let links = storage.get_links(sub, col, path, order, 2, links.next, &dids_filter)?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (5, 0),
+                items: vec![
+                    RecordId {
+                        did: "did:plc:asdf-3".into(),
+                        collection: col.into(),
+                        rkey: "asdf".into(),
+                    },
+                    RecordId {
+                        did: "did:plc:asdf-2".into(),
+                        collection: col.into(),
+                        rkey: "asdf".into(),
+                    },
+                ],
+                next: Some(1),
+                total: 5,
+            }
+        );
+        // distinct dids
+        let dids = storage.get_distinct_dids(sub, col, path, 2, dids.next)?;
+        assert_eq!(
+            dids,
+            PagedAppendingCollection {
+                version: (5, 0),
+                items: vec!["did:plc:asdf-3".into(), "did:plc:asdf-2".into()],
+                next: Some(1),
+                total: 5,
+            }
+        );
+
+        // --- --- round three! --- --- //
+        // all backlinks
+        let links = storage.get_links(sub, col, path, order, 2, links.next, &dids_filter)?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (5, 0),
+                items: vec![RecordId {
+                    did: "did:plc:asdf-1".into(),
+                    collection: col.into(),
+                    rkey: "asdf".into(),
+                },],
+                next: None,
+                total: 5,
+            }
+        );
+        // distinct dids
+        let dids = storage.get_distinct_dids(sub, col, path, 2, dids.next)?;
+        assert_eq!(
+            dids,
+            PagedAppendingCollection {
+                version: (5, 0),
+                items: vec!["did:plc:asdf-1".into()],
+                next: None,
+                total: 5,
+            }
+        );
+
+        assert_stats(storage.get_stats()?, 5..=5, 1..=1, 5..=5);
+    });
+
+    test_each_storage!(get_links_reverse_order, |storage| {
+        for i in 1..=5 {
+            storage.push(
+                &ActionableEvent::CreateLinks {
+                    record_id: RecordId {
+                        did: format!("did:plc:asdf-{i}").into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                    links: vec![CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    }],
+                },
+                0,
+            )?;
+        }
+
+        // Test OldestToNewest order (oldest first)
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            Order::OldestToNewest,
+            2,
+            None,
+            &HashSet::default(),
+        )?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (5, 0),
+                items: vec![
+                    RecordId {
+                        did: "did:plc:asdf-1".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                    RecordId {
+                        did: "did:plc:asdf-2".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                ],
+                next: Some(3),
+                total: 5,
+            }
+        );
+        // Test NewestToOldest order (newest first)
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            Order::NewestToOldest,
+            2,
+            None,
+            &HashSet::default(),
+        )?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -704,71 +955,172 @@ mod tests {
                 total: 5,
             }
         );
-        assert_eq!(
-            dids,
-            PagedAppendingCollection {
-                version: (5, 0),
-                items: vec!["did:plc:asdf-5".into(), "did:plc:asdf-4".into()],
-                next: Some(3),
-                total: 5,
-            }
-        );
-        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, links.next)?;
-        let dids = storage.get_distinct_dids("a.com", "app.t.c", ".abc.uri", 2, dids.next)?;
-        assert_eq!(
-            links,
-            PagedAppendingCollection {
-                version: (5, 0),
-                items: vec![
-                    RecordId {
-                        did: "did:plc:asdf-3".into(),
-                        collection: "app.t.c".into(),
-                        rkey: "asdf".into(),
-                    },
-                    RecordId {
-                        did: "did:plc:asdf-2".into(),
-                        collection: "app.t.c".into(),
-                        rkey: "asdf".into(),
-                    },
-                ],
-                next: Some(1),
-                total: 5,
-            }
-        );
-        assert_eq!(
-            dids,
-            PagedAppendingCollection {
-                version: (5, 0),
-                items: vec!["did:plc:asdf-3".into(), "did:plc:asdf-2".into()],
-                next: Some(1),
-                total: 5,
-            }
-        );
-        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, links.next)?;
-        let dids = storage.get_distinct_dids("a.com", "app.t.c", ".abc.uri", 2, dids.next)?;
+        assert_stats(storage.get_stats()?, 5..=5, 1..=1, 5..=5);
+    });
+
+    test_each_storage!(get_filtered_links, |storage| {
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            Order::NewestToOldest,
+            2,
+            None,
+            &HashSet::from([Did("did:plc:linker".to_string())]),
+        )?;
+        assert_eq!(links, PagedAppendingCollection::empty());
+
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:linker".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("a.com".into()),
+                    path: ".abc.uri".into(),
+                }],
+            },
+            0,
+        )?;
+
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            Order::NewestToOldest,
+            2,
+            None,
+            &HashSet::from([Did("did:plc:linker".to_string())]),
+        )?;
         assert_eq!(
             links,
             PagedAppendingCollection {
-                version: (5, 0),
+                version: (1, 0),
                 items: vec![RecordId {
-                    did: "did:plc:asdf-1".into(),
+                    did: "did:plc:linker".into(),
                     collection: "app.t.c".into(),
                     rkey: "asdf".into(),
                 },],
                 next: None,
-                total: 5,
+                total: 1,
             }
         );
+
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            Order::NewestToOldest,
+            2,
+            None,
+            &HashSet::from([Did("did:plc:someone-else".to_string())]),
+        )?;
+        assert_eq!(links, PagedAppendingCollection::empty());
+
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:linker".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf-2".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("a.com".into()),
+                    path: ".abc.uri".into(),
+                }],
+            },
+            0,
+        )?;
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:someone-else".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("a.com".into()),
+                    path: ".abc.uri".into(),
+                }],
+            },
+            0,
+        )?;
+
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            Order::NewestToOldest,
+            2,
+            None,
+            &HashSet::from([Did("did:plc:linker".to_string())]),
+        )?;
         assert_eq!(
-            dids,
+            links,
             PagedAppendingCollection {
-                version: (5, 0),
-                items: vec!["did:plc:asdf-1".into()],
+                version: (2, 0),
+                items: vec![
+                    RecordId {
+                        did: "did:plc:linker".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf-2".into(),
+                    },
+                    RecordId {
+                        did: "did:plc:linker".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                ],
                 next: None,
-                total: 5,
+                total: 2,
             }
         );
-        assert_stats(storage.get_stats()?, 5..=5, 1..=1, 5..=5);
+
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            Order::NewestToOldest,
+            2,
+            None,
+            &HashSet::from([
+                Did("did:plc:linker".to_string()),
+                Did("did:plc:someone-else".to_string()),
+            ]),
+        )?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (3, 0),
+                items: vec![
+                    RecordId {
+                        did: "did:plc:someone-else".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                    RecordId {
+                        did: "did:plc:linker".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf-2".into(),
+                    },
+                ],
+                next: Some(1),
+                total: 3,
+            }
+        );
+
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            Order::NewestToOldest,
+            2,
+            None,
+            &HashSet::from([Did("did:plc:someone-unknown".to_string())]),
+        )?;
+        assert_eq!(links, PagedAppendingCollection::empty());
     });
 
     test_each_storage!(get_links_exact_multiple, |storage| {
@@ -788,7 +1140,15 @@ mod tests {
                 0,
             )?;
         }
-        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, None)?;
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            Order::NewestToOldest,
+            2,
+            None,
+            &HashSet::default(),
+        )?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -809,7 +1169,15 @@ mod tests {
                 total: 4,
             }
         );
-        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, links.next)?;
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            Order::NewestToOldest,
+            2,
+            links.next,
+            &HashSet::default(),
+        )?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -850,7 +1218,15 @@ mod tests {
                 0,
             )?;
         }
-        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, None)?;
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            Order::NewestToOldest,
+            2,
+            None,
+            &HashSet::default(),
+        )?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -885,7 +1261,15 @@ mod tests {
             },
             0,
         )?;
-        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, links.next)?;
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            Order::NewestToOldest,
+            2,
+            links.next,
+            &HashSet::default(),
+        )?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -926,7 +1310,15 @@ mod tests {
                 0,
             )?;
         }
-        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, None)?;
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            Order::NewestToOldest,
+            2,
+            None,
+            &HashSet::default(),
+        )?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -955,7 +1347,15 @@ mod tests {
             }),
             0,
         )?;
-        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, links.next)?;
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            Order::NewestToOldest,
+            2,
+            links.next,
+            &HashSet::default(),
+        )?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -989,7 +1389,15 @@ mod tests {
                 0,
             )?;
         }
-        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, None)?;
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            Order::NewestToOldest,
+            2,
+            None,
+            &HashSet::default(),
+        )?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -1014,7 +1422,15 @@ mod tests {
             &ActionableEvent::DeactivateAccount("did:plc:asdf-1".into()),
             0,
         )?;
-        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, links.next)?;
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            Order::NewestToOldest,
+            2,
+            links.next,
+            &HashSet::default(),
+        )?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -1081,5 +1497,798 @@ mod tests {
             counts
         });
         assert_stats(storage.get_stats()?, 1..=1, 2..=2, 1..=1);
+    });
+
+    //////// rkey-indexed (path = ".") /////////
+
+    test_each_storage!(rkey_indexed_basic, |storage| {
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:voucher".into(),
+                    collection: "sh.tangled.graph.vouch".into(),
+                    rkey: "did:plc:vouchedfor".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Did("did:plc:vouchedfor".into()),
+                    path: ".".into(),
+                }],
+            },
+            0,
+        )?;
+
+        assert_eq!(
+            storage.get_count("did:plc:vouchedfor", "sh.tangled.graph.vouch", ".")?,
+            1
+        );
+        assert_eq!(
+            storage.get_distinct_did_count("did:plc:vouchedfor", "sh.tangled.graph.vouch", ".")?,
+            1
+        );
+        assert_eq!(
+            storage.get_links(
+                "did:plc:vouchedfor",
+                "sh.tangled.graph.vouch",
+                ".",
+                Order::NewestToOldest,
+                100,
+                None,
+                &HashSet::default(),
+            )?,
+            PagedAppendingCollection {
+                version: (1, 0),
+                items: vec![RecordId {
+                    did: "did:plc:voucher".into(),
+                    collection: "sh.tangled.graph.vouch".into(),
+                    rkey: "did:plc:vouchedfor".into(),
+                }],
+                next: None,
+                total: 1,
+            }
+        );
+        assert_stats(storage.get_stats()?, 1..=1, 1..=1, 1..=1);
+
+        storage.push(
+            &ActionableEvent::DeleteRecord(RecordId {
+                did: "did:plc:voucher".into(),
+                collection: "sh.tangled.graph.vouch".into(),
+                rkey: "did:plc:vouchedfor".into(),
+            }),
+            0,
+        )?;
+        assert_eq!(
+            storage.get_count("did:plc:vouchedfor", "sh.tangled.graph.vouch", ".")?,
+            0
+        );
+    });
+
+    test_each_storage!(rkey_link_and_record_link_coexist, |storage| {
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:voucher".into(),
+                    collection: "sh.tangled.graph.vouch".into(),
+                    rkey: "did:plc:vouchedfor".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Did("did:plc:vouchedfor".into()),
+                        path: ".".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("https://atproto.com".into()),
+                        path: ".reason".into(),
+                    },
+                ],
+            },
+            0,
+        )?;
+
+        assert_eq!(
+            storage.get_count("did:plc:vouchedfor", "sh.tangled.graph.vouch", ".")?,
+            1
+        );
+        assert_eq!(
+            storage.get_count("https://atproto.com", "sh.tangled.graph.vouch", ".reason")?,
+            1
+        );
+
+        assert_eq!(storage.get_all_record_counts("did:plc:vouchedfor")?, {
+            let mut counts = HashMap::new();
+            let mut by_path = HashMap::new();
+            by_path.insert(".".into(), 1);
+            counts.insert("sh.tangled.graph.vouch".into(), by_path);
+            counts
+        });
+        assert_eq!(storage.get_all_record_counts("https://atproto.com")?, {
+            let mut counts = HashMap::new();
+            let mut by_path = HashMap::new();
+            by_path.insert(".reason".into(), 1);
+            counts.insert("sh.tangled.graph.vouch".into(), by_path);
+            counts
+        });
+
+        storage.push(
+            &ActionableEvent::DeleteRecord(RecordId {
+                did: "did:plc:voucher".into(),
+                collection: "sh.tangled.graph.vouch".into(),
+                rkey: "did:plc:vouchedfor".into(),
+            }),
+            0,
+        )?;
+        assert_eq!(
+            storage.get_count("did:plc:vouchedfor", "sh.tangled.graph.vouch", ".")?,
+            0
+        );
+        assert_eq!(
+            storage.get_count("https://atproto.com", "sh.tangled.graph.vouch", ".reason")?,
+            0
+        );
+    });
+
+    //////// many-to-many /////////
+
+    test_each_storage!(get_m2m_counts_empty, |storage| {
+        assert_eq!(
+            storage.get_many_to_many_counts(
+                "a.com",
+                "a.b.c",
+                ".d.e",
+                ".f.g",
+                10,
+                None,
+                &HashSet::new(),
+                &HashSet::new(),
+            )?,
+            PagedOrderedCollection::empty()
+        );
+    });
+
+    test_each_storage!(get_m2m_counts_single, |storage| {
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("b.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("b.com".into()),
+                        path: ".ghi.uri".into(),
+                    },
+                ],
+            },
+            0,
+        )?;
+        assert_eq!(
+            storage.get_many_to_many_counts(
+                "a.com",
+                "app.t.c",
+                ".abc.uri",
+                ".def.uri",
+                10,
+                None,
+                &HashSet::new(),
+                &HashSet::new(),
+            )?,
+            PagedOrderedCollection {
+                items: vec![("b.com".to_string(), 1, 1)],
+                next: None,
+            }
+        );
+    });
+
+    test_each_storage!(get_m2m_counts_filters, |storage| {
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("b.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                ],
+            },
+            0,
+        )?;
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdfasdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("b.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                ],
+            },
+            1,
+        )?;
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:fdsa".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("c.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                ],
+            },
+            2,
+        )?;
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:fdsa".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf2".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("c.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                ],
+            },
+            3,
+        )?;
+        assert_eq!(
+            storage.get_many_to_many_counts(
+                "a.com",
+                "app.t.c",
+                ".abc.uri",
+                ".def.uri",
+                10,
+                None,
+                &HashSet::new(),
+                &HashSet::new(),
+            )?,
+            PagedOrderedCollection {
+                items: vec![("b.com".to_string(), 2, 2), ("c.com".to_string(), 2, 1),],
+                next: None,
+            }
+        );
+        assert_eq!(
+            storage.get_many_to_many_counts(
+                "a.com",
+                "app.t.c",
+                ".abc.uri",
+                ".def.uri",
+                10,
+                None,
+                &HashSet::from_iter([Did("did:plc:fdsa".to_string())]),
+                &HashSet::new(),
+            )?,
+            PagedOrderedCollection {
+                items: vec![("c.com".to_string(), 2, 1),],
+                next: None,
+            }
+        );
+        assert_eq!(
+            storage.get_many_to_many_counts(
+                "a.com",
+                "app.t.c",
+                ".abc.uri",
+                ".def.uri",
+                10,
+                None,
+                &HashSet::new(),
+                &HashSet::from_iter(["b.com".to_string()]),
+            )?,
+            PagedOrderedCollection {
+                items: vec![("b.com".to_string(), 2, 2),],
+                next: None,
+            }
+        );
+
+        // Pagination edge cases: we have 2 grouped results (b.com and c.com)
+
+        // Case 1: limit > items (limit=10, items=2) -> next should be None
+        let result = storage.get_many_to_many_counts(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            10,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(result.items.len(), 2);
+        assert_eq!(result.next, None, "next should be None when items < limit");
+
+        // Case 2: limit == items (limit=2, items=2) -> next should be None
+        let result = storage.get_many_to_many_counts(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            2,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(result.items.len(), 2);
+        assert_eq!(
+            result.next, None,
+            "next should be None when items == limit (no more pages)"
+        );
+
+        // Case 3: limit < items (limit=1, items=2) -> next should be Some
+        let result = storage.get_many_to_many_counts(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            1,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(result.items.len(), 1);
+        assert!(
+            result.next.is_some(),
+            "next should be Some when items > limit"
+        );
+
+        // Verify second page returns remaining item with no cursor
+        let result2 = storage.get_many_to_many_counts(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            1,
+            result.next,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(result2.items.len(), 1);
+        assert_eq!(result2.next, None, "next should be None on final page");
+    });
+
+    test_each_storage!(get_m2m_empty, |storage| {
+        assert_eq!(
+            storage.get_many_to_many(
+                "a.com",
+                "a.b.c",
+                ".d.e",
+                ".f.g",
+                10,
+                None,
+                &HashSet::new(),
+                &HashSet::new(),
+            )?,
+            PagedOrderedCollection {
+                items: vec![],
+                next: None,
+            }
+        );
+    });
+
+    test_each_storage!(get_m2m_single, |storage| {
+        // One record linking to a.com (backward), with two forward links at
+        // the same path_to_other (.def.uri) pointing to b.com and c.com.
+        // Both forward targets must appear in the output.
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("b.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("c.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                ],
+            },
+            0,
+        )?;
+        let result = storage.get_many_to_many(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            10,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(
+            result.items.len(),
+            2,
+            "both forward links at path_to_other should be emitted"
+        );
+        let mut targets: Vec<_> = result
+            .items
+            .iter()
+            .map(|item| item.other_subject.as_str())
+            .collect();
+        targets.sort();
+        assert_eq!(targets, vec!["b.com", "c.com"]);
+        assert!(result
+            .items
+            .iter()
+            .all(|item| item.link_record.uri() == "at://did:plc:asdf/app.t.c/asdf"));
+        assert_eq!(result.next, None);
+    });
+
+    test_each_storage!(get_m2m_filters, |storage| {
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("b.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                ],
+            },
+            0,
+        )?;
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf2".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("b.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                ],
+            },
+            1,
+        )?;
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:fdsa".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "fdsa".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("c.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                ],
+            },
+            2,
+        )?;
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:fdsa".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "fdsa2".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("c.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                ],
+            },
+            3,
+        )?;
+
+        // Test without filters - should get all records as flat items
+        let result = storage.get_many_to_many(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            10,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(result.items.len(), 4);
+        assert_eq!(result.next, None);
+        // Check b.com items
+        let b_items: Vec<_> = result
+            .items
+            .iter()
+            .filter(|item| item.other_subject == "b.com")
+            .collect();
+        assert_eq!(b_items.len(), 2);
+        assert!(b_items.iter().any(
+            |item| item.link_record.did.0 == "did:plc:asdf" && item.link_record.rkey == "asdf"
+        ));
+        assert!(b_items.iter().any(
+            |item| item.link_record.did.0 == "did:plc:asdf" && item.link_record.rkey == "asdf2"
+        ));
+        // Check c.com items
+        let c_items: Vec<_> = result
+            .items
+            .iter()
+            .filter(|item| item.other_subject == "c.com")
+            .collect();
+        assert_eq!(c_items.len(), 2);
+        assert!(c_items.iter().any(
+            |item| item.link_record.did.0 == "did:plc:fdsa" && item.link_record.rkey == "fdsa"
+        ));
+        assert!(c_items.iter().any(
+            |item| item.link_record.did.0 == "did:plc:fdsa" && item.link_record.rkey == "fdsa2"
+        ));
+
+        // Test with DID filter - should only get records from did:plc:fdsa
+        let result = storage.get_many_to_many(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            10,
+            None,
+            &HashSet::from_iter([Did("did:plc:fdsa".to_string())]),
+            &HashSet::new(),
+        )?;
+        assert_eq!(result.items.len(), 2);
+        assert!(result
+            .items
+            .iter()
+            .all(|item| item.other_subject == "c.com"));
+        assert!(result
+            .items
+            .iter()
+            .all(|item| item.link_record.did.0 == "did:plc:fdsa"));
+
+        // Test with target filter - should only get records linking to b.com
+        let result = storage.get_many_to_many(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            10,
+            None,
+            &HashSet::new(),
+            &HashSet::from_iter(["b.com".to_string()]),
+        )?;
+        assert_eq!(result.items.len(), 2);
+        assert!(result
+            .items
+            .iter()
+            .all(|item| item.other_subject == "b.com"));
+        assert!(result
+            .items
+            .iter()
+            .all(|item| item.link_record.did.0 == "did:plc:asdf"));
+
+        // Pagination edge cases: we have 4 flat items
+
+        // Case 1: limit > items (limit=10, items=4) -> next should be None
+        let result = storage.get_many_to_many(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            10,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(result.items.len(), 4);
+        assert_eq!(result.next, None, "next should be None when items < limit");
+
+        // Case 2: limit == items (limit=4, items=4) -> next should be None
+        let result = storage.get_many_to_many(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            4,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(result.items.len(), 4);
+        assert_eq!(
+            result.next, None,
+            "next should be None when items == limit (no more pages)"
+        );
+
+        // Case 3: limit < items (limit=3, items=4) -> next should be Some
+        let result = storage.get_many_to_many(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            3,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(result.items.len(), 3);
+        assert!(
+            result.next.is_some(),
+            "next should be Some when items > limit"
+        );
+
+        // Verify second page returns remaining item with no cursor.
+        // This now works correctly because we use a composite cursor that includes
+        // (target, did, rkey), allowing pagination even when multiple records share
+        // the same target string.
+        let result2 = storage.get_many_to_many(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            3,
+            result.next,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(
+            result2.items.len(),
+            1,
+            "second page should have 1 remaining item"
+        );
+        assert_eq!(result2.next, None, "next should be None on final page");
+
+        // Verify we got all 4 unique items across both pages (no duplicates, no gaps)
+        let mut all_rkeys: Vec<_> = result
+            .items
+            .iter()
+            .map(|item| item.link_record.rkey.clone())
+            .collect();
+        all_rkeys.extend(
+            result2
+                .items
+                .iter()
+                .map(|item| item.link_record.rkey.clone()),
+        );
+        all_rkeys.sort();
+        assert_eq!(
+            all_rkeys,
+            vec!["asdf", "asdf2", "fdsa", "fdsa2"],
+            "should have all 4 records across both pages"
+        );
+    });
+
+    // Pagination that splits across forward links within a single backlinker.
+    // The cursor should correctly resume mid-record on the next page.
+    test_each_storage!(get_m2m_paginate_within_forward_links, |storage| {
+        // Record with 1 backward link and 3 forward links at the same path
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:lister".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "list1".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".subject.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("x.com".into()),
+                        path: ".items[].uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("y.com".into()),
+                        path: ".items[].uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("z.com".into()),
+                        path: ".items[].uri".into(),
+                    },
+                ],
+            },
+            0,
+        )?;
+
+        // Page 1: limit=2, should get 2 of the 3 forward links
+        let page1 = storage.get_many_to_many(
+            "a.com",
+            "app.t.c",
+            ".subject.uri",
+            ".items[].uri",
+            2,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(page1.items.len(), 2, "first page should have 2 items");
+        assert!(
+            page1.next.is_some(),
+            "should have a next cursor for remaining item"
+        );
+
+        // Page 2: should get the remaining 1 forward link
+        let page2 = storage.get_many_to_many(
+            "a.com",
+            "app.t.c",
+            ".subject.uri",
+            ".items[].uri",
+            2,
+            page1.next,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?;
+        assert_eq!(page2.items.len(), 1, "second page should have 1 item");
+        assert_eq!(page2.next, None, "no more pages");
+
+        // Verify all 3 targets appear across pages with no duplicates
+        let mut all_targets: Vec<_> = page1
+            .items
+            .iter()
+            .chain(page2.items.iter())
+            .map(|item| item.other_subject.clone())
+            .collect();
+        all_targets.sort();
+        assert_eq!(
+            all_targets,
+            vec!["x.com", "y.com", "z.com"],
+            "all forward targets should appear exactly once across pages"
+        );
     });
 }

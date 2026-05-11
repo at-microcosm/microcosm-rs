@@ -4,15 +4,16 @@ use crate::{
 };
 use atrium_api::types::string::{Cid, Did, Handle, Nsid, RecordKey};
 use foyer::HybridCache;
-use links::at_uri::parse_at_uri as normalize_at_uri;
+use microcosm_links::at_uri::parse_at_uri as normalize_at_uri;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use poem::{
-    Endpoint, EndpointExt, Route, Server,
+    Endpoint, EndpointExt, IntoResponse, Route, Server,
     endpoint::{StaticFileEndpoint, make_sync},
     http::Method,
     listener::{
@@ -288,6 +289,35 @@ impl Xrpc {
         self.get_record_impl(repo, collection, rkey, cid).await
     }
 
+    /// blue.microcosm.repo.getRecordByUri
+    ///
+    /// alias of `com.bad-example.repo.getUriRecord` with intention to stabilize under this name
+    #[oai(
+        path = "/blue.microcosm.repo.getRecordByUri",
+        method = "get",
+        tag = "ApiTags::Custom"
+    )]
+    async fn get_record_by_uri(
+        &self,
+        /// The at-uri of the record
+        ///
+        /// The identifier can be a DID or an atproto handle, and the collection
+        /// and rkey segments must be present.
+        #[oai(example = "example_uri")]
+        Query(at_uri): Query<String>,
+        /// Optional: the CID of the version of the record.
+        ///
+        /// If not specified, then return the most recent version.
+        ///
+        /// > [!tip]
+        /// > If specified and a newer version of the record exists, returns 404 not
+        /// > found. That is: slingshot only retains the most recent version of a
+        /// > record.
+        Query(cid): Query<Option<String>>,
+    ) -> GetRecordResponse {
+        self.get_uri_record(Query(at_uri), Query(cid)).await
+    }
+
     /// com.bad-example.repo.getUriRecord
     ///
     /// Ergonomic complement to [`com.atproto.repo.getRecord`](https://docs.bsky.app/docs/api/com-atproto-repo-get-record)
@@ -375,7 +405,7 @@ impl Xrpc {
         #[oai(example = "example_handle")]
         Query(handle): Query<String>,
     ) -> JustDidResponse {
-        let Ok(handle) = Handle::new(handle) else {
+        let Ok(handle) = Handle::new(handle.to_lowercase()) else {
             return JustDidResponse::BadRequest(xrpc_error("InvalidRequest", "not a valid handle"));
         };
 
@@ -413,6 +443,23 @@ impl Xrpc {
         }))
     }
 
+    /// blue.microcosm.identity.resolveMiniDoc
+    ///
+    /// alias of `com.bad-example.identity.resolveMiniDoc` with intention to stabilize under this name
+    #[oai(
+        path = "/blue.microcosm.identity.resolveMiniDoc",
+        method = "get",
+        tag = "ApiTags::Custom"
+    )]
+    async fn resolve_mini_doc(
+        &self,
+        /// Handle or DID to resolve
+        #[oai(example = "example_handle")]
+        Query(identifier): Query<String>,
+    ) -> ResolveMiniIDResponse {
+        self.resolve_mini_id(Query(identifier)).await
+    }
+
     /// com.bad-example.identity.resolveMiniDoc
     ///
     /// Like [com.atproto.identity.resolveIdentity](https://docs.bsky.app/docs/api/com-atproto-identity-resolve-identity)
@@ -436,8 +483,8 @@ impl Xrpc {
         let did = match Did::new(identifier.clone()) {
             Ok(did) => did,
             Err(_) => {
-                let Ok(alleged_handle) = Handle::new(identifier) else {
-                    return invalid("identifier was not a valid DID or handle");
+                let Ok(alleged_handle) = Handle::new(identifier.to_lowercase()) else {
+                    return invalid("Identifier was not a valid DID or handle");
                 };
 
                 match self.identity.handle_to_did(alleged_handle.clone()).await {
@@ -453,16 +500,16 @@ impl Xrpc {
                     Err(e) => {
                         log::debug!("failed to resolve handle: {e}");
                         // TODO: ServerError not BadRequest
-                        return invalid("errored while trying to resolve handle to DID");
+                        return invalid("Errored while trying to resolve handle to DID");
                     }
                 }
             }
         };
         let Ok(partial_doc) = self.identity.did_to_partial_mini_doc(&did).await else {
-            return invalid("failed to get DID doc");
+            return invalid("Failed to get DID doc");
         };
         let Some(partial_doc) = partial_doc else {
-            return invalid("failed to find DID doc");
+            return invalid("Failed to find DID doc");
         };
 
         // ok so here's where we're at:
@@ -483,10 +530,10 @@ impl Xrpc {
                 .handle_to_did(partial_doc.unverified_handle.clone())
                 .await
             else {
-                return invalid("failed to get did doc's handle");
+                return invalid("Failed to get DID doc's handle");
             };
             let Some(handle_did) = handle_did else {
-                return invalid("failed to resolve did doc's handle");
+                return invalid("Failed to resolve DID doc's handle");
             };
             if handle_did == did {
                 partial_doc.unverified_handle.to_string()
@@ -513,10 +560,10 @@ impl Xrpc {
         let did = match Did::new(repo.clone()) {
             Ok(did) => did,
             Err(_) => {
-                let Ok(handle) = Handle::new(repo) else {
+                let Ok(handle) = Handle::new(repo.to_lowercase()) else {
                     return GetRecordResponse::BadRequest(xrpc_error(
                         "InvalidRequest",
-                        "repo was not a valid DID or handle",
+                        "Repo was not a valid DID or handle",
                     ));
                 };
                 match self.identity.handle_to_did(handle).await {
@@ -534,7 +581,7 @@ impl Xrpc {
                         log::debug!("handle resolution failed: {e}");
                         return GetRecordResponse::ServerError(xrpc_error(
                             "ResolutionFailed",
-                            "errored while trying to resolve handle to DID",
+                            "Errored while trying to resolve handle to DID",
                         ));
                     }
                 }
@@ -544,17 +591,17 @@ impl Xrpc {
         let Ok(collection) = Nsid::new(collection) else {
             return GetRecordResponse::BadRequest(xrpc_error(
                 "InvalidRequest",
-                "invalid NSID for collection",
+                "Invalid NSID for collection",
             ));
         };
 
         let Ok(rkey) = RecordKey::new(rkey) else {
-            return GetRecordResponse::BadRequest(xrpc_error("InvalidRequest", "invalid rkey"));
+            return GetRecordResponse::BadRequest(xrpc_error("InvalidRequest", "Invalid rkey"));
         };
 
         let cid: Option<Cid> = if let Some(cid) = cid {
             let Ok(cid) = Cid::from_str(&cid) else {
-                return GetRecordResponse::BadRequest(xrpc_error("InvalidRequest", "invalid CID"));
+                return GetRecordResponse::BadRequest(xrpc_error("InvalidRequest", "Invalid CID"));
             };
             Some(cid)
         } else {
@@ -563,35 +610,44 @@ impl Xrpc {
 
         let at_uri = format!("at://{}/{}/{}", &*did, &*collection, &*rkey);
 
+        metrics::counter!("slingshot_get_record").increment(1);
         let fr = self
             .cache
-            .fetch(at_uri.clone(), {
+            .get_or_fetch(&at_uri, {
                 let cid = cid.clone();
                 let repo_api = self.repo.clone();
                 || async move {
-                    repo_api
-                        .get_record(&did, &collection, &rkey, &cid)
-                        .await
-                        .map_err(|e| foyer::Error::Other(Box::new(e)))
+                    let t0 = Instant::now();
+                    let res = repo_api.get_record(&did, &collection, &rkey, &cid).await;
+                    let success = if res.is_ok() { "true" } else { "false" };
+                    metrics::histogram!("slingshot_fetch_record", "success" => success)
+                        .record(t0.elapsed());
+                    res
                 }
             })
             .await;
 
         let entry = match fr {
             Ok(e) => e,
-            Err(foyer::Error::Other(e)) => {
-                let record_error = match e.downcast::<RecordError>() {
-                    Ok(e) => e,
-                    Err(e) => {
-                        log::error!("error (foyer other) getting cache entry, {e:?}");
+            Err(e) if e.kind() == foyer::ErrorKind::External => {
+                let record_error = match e.source().map(|s| s.downcast_ref::<RecordError>()) {
+                    Some(Some(e)) => e,
+                    other => {
+                        if other.is_none() {
+                            log::error!("external error without a source. wat? {e}");
+                        } else {
+                            log::error!("downcast to RecordError failed...? {e}");
+                        }
                         return GetRecordResponse::ServerError(xrpc_error(
                             "ServerError",
                             "sorry, something went wrong",
                         ));
                     }
                 };
-                let RecordError::UpstreamBadRequest(ErrorResponseObject { error, message }) =
-                    *record_error
+                let RecordError::UpstreamBadRequest(ErrorResponseObject {
+                    ref error,
+                    ref message,
+                }) = *record_error
                 else {
                     log::error!("RecordError getting cache entry, {record_error:?}");
                     return GetRecordResponse::ServerError(xrpc_error(
@@ -643,7 +699,6 @@ impl Xrpc {
     }
 
     // TODO
-    // #[oai(path = "/com.atproto.identity.resolveHandle", method = "get")]
     // #[oai(path = "/com.atproto.identity.resolveDid", method = "get")]
     // but these are both not specified to do bidirectional validation, which is what we want to offer
     // com.atproto.identity.resolveIdentity seems right, but requires returning the full did-doc
@@ -652,8 +707,9 @@ impl Xrpc {
     //  handle -> verified did + pds url
     //
     // we could do horrible things and implement resolveIdentity with only a stripped-down fake did doc
-    // but this will *definitely* cause problems because eg. we're not currently storing pubkeys and
-    // those are a little bit important
+    // but this will *definitely* cause problems probably
+    //
+    // resolveMiniDoc gets most of this well enough.
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -687,14 +743,17 @@ fn get_did_doc(domain: &str) -> impl Endpoint + use<> {
     make_sync(move |_| doc.clone())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn serve(
     cache: HybridCache<String, CachedRecord>,
     identity: Identity,
     repo: Repo,
-    domain: Option<String>,
+    acme_domain: Option<String>,
     acme_contact: Option<String>,
-    certs: Option<PathBuf>,
+    acme_cache_path: Option<PathBuf>,
+    acme_ipv6: bool,
     shutdown: CancellationToken,
+    bind: std::net::SocketAddr,
 ) -> Result<(), ServerError> {
     let repo = Arc::new(repo);
     let api_service = OpenApiService::new(
@@ -706,10 +765,10 @@ pub async fn serve(
         "Slingshot",
         env!("CARGO_PKG_VERSION"),
     )
-    .server(if let Some(ref h) = domain {
+    .server(if let Some(ref h) = acme_domain {
         format!("https://{h}")
     } else {
-        "http://localhost:3000".to_string()
+        format!("http://{bind}") // yeah should probably fix this for reverse-proxy scenarios but it's ok for dev for now
     })
     .url_prefix("/xrpc")
     .contact(
@@ -727,7 +786,7 @@ pub async fn serve(
         .nest("/openapi", api_service.spec_endpoint())
         .nest("/xrpc/", api_service);
 
-    if let Some(domain) = domain {
+    if let Some(domain) = acme_domain {
         rustls::crypto::aws_lc_rs::default_provider()
             .install_default()
             .expect("alskfjalksdjf");
@@ -740,19 +799,19 @@ pub async fn serve(
         if let Some(contact) = acme_contact {
             auto_cert = auto_cert.contact(contact);
         }
-        if let Some(certs) = certs {
-            auto_cert = auto_cert.cache_path(certs);
+        if let Some(cache_path) = acme_cache_path {
+            auto_cert = auto_cert.cache_path(cache_path);
         }
         let auto_cert = auto_cert.build().map_err(ServerError::AcmeBuildError)?;
 
         run(
-            TcpListener::bind("0.0.0.0:443").acme(auto_cert),
+            TcpListener::bind(if acme_ipv6 { "[::]:443" } else { "0.0.0.0:443" }).acme(auto_cert),
             app,
             shutdown,
         )
         .await
     } else {
-        run(TcpListener::bind("127.0.0.1:3000"), app, shutdown).await
+        run(TcpListener::bind(bind), app, shutdown).await
     }
 }
 
@@ -768,11 +827,27 @@ where
                 .allow_credentials(false),
         )
         .with(CatchPanic::new())
+        .around(request_counter)
         .with(Tracing);
+
     Server::new(listener)
         .name("slingshot")
         .run_with_graceful_shutdown(app, shutdown.cancelled(), None)
         .await
         .map_err(ServerError::ServerExited)
         .inspect(|()| log::info!("server ended. goodbye."))
+}
+
+async fn request_counter<E: Endpoint>(next: E, req: poem::Request) -> poem::Result<poem::Response> {
+    let t0 = std::time::Instant::now();
+    let method = req.method().to_string();
+    let path = req.uri().path().to_string();
+    let res = next.call(req).await?.into_response();
+    metrics::histogram!(
+        "server_request",
+        "endpoint" => format!("{method} {path}"),
+        "status" => res.status().to_string(),
+    )
+    .record(t0.elapsed());
+    Ok(res)
 }

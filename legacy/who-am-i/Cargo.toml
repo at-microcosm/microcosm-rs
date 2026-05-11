@@ -11,7 +11,7 @@ atrium-oauth = "0.1.3"
 axum = "0.8.4"
 axum-extra = { version = "0.10.1", features = ["cookie-signed", "typed-header"] }
 axum-template = { version = "3.0.0", features = ["handlebars"] }
-clap = { version = "4.5.40", features = ["derive", "env"] }
+clap = { workspace = true }
 ctrlc = "3.4.7"
 dashmap = "6.1.0"
 elliptic-curve = "0.13.8"

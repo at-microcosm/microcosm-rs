@@ -1,7 +1,5 @@
 use anyhow::{bail, Result};
-use metrics::{
-    counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram, Unit,
-};
+use metrics::{counter, gauge, histogram};
 use std::io::{Cursor, ErrorKind, Read};
 use std::net::ToSocketAddrs;
 use std::thread;
@@ -19,52 +17,6 @@ pub fn consume_jetstream(
     stream: String,
     staying_alive: CancellationToken,
 ) -> Result<()> {
-    describe_counter!(
-        "jetstream_connnect",
-        Unit::Count,
-        "attempts to connect to a jetstream server"
-    );
-    describe_counter!(
-        "jetstream_read",
-        Unit::Count,
-        "attempts to read an event from jetstream"
-    );
-    describe_counter!(
-        "jetstream_read_fail",
-        Unit::Count,
-        "failures to read events from jetstream"
-    );
-    describe_counter!(
-        "jetstream_read_bytes",
-        Unit::Bytes,
-        "total received message bytes from jetstream"
-    );
-    describe_counter!(
-        "jetstream_read_bytes_decompressed",
-        Unit::Bytes,
-        "total decompressed message bytes from jetstream"
-    );
-    describe_histogram!(
-        "jetstream_read_bytes_decompressed",
-        Unit::Bytes,
-        "decompressed size of jetstream messages"
-    );
-    describe_counter!(
-        "jetstream_events",
-        Unit::Count,
-        "valid json messages received"
-    );
-    describe_histogram!(
-        "jetstream_events_queued",
-        Unit::Count,
-        "event messages waiting in queue"
-    );
-    describe_gauge!(
-        "jetstream_cursor_age",
-        Unit::Microseconds,
-        "microseconds between our clock and the jetstream event's time_us"
-    );
-
     let dict = DecoderDictionary::copy(JETSTREAM_ZSTD_DICTIONARY);
     let mut connect_retries = 0;
     let mut latest_cursor = cursor;
@@ -226,13 +178,20 @@ pub fn consume_jetstream(
                             println!("jetstream closed the websocket cleanly.");
                             break;
                         }
-                        r => eprintln!("jetstream: close result after error: {r:?}"),
+                        Err(_) => {
+                            counter!("jetstream_read_fail", "url" => stream.clone(), "reason" => "dirty close").increment(1);
+                            println!("jetstream failed to close the websocket cleanly.");
+                            break;
+                        }
+                        Ok(r) => {
+                            eprintln!("jetstream: close result after error: {r:?}");
+                            counter!("jetstream_read_fail", "url" => stream.clone(), "reason" => "read error")
+                                .increment(1);
+                            // if we didn't immediately get ConnectionClosed, we should keep polling read
+                            // until we get it.
+                            continue;
+                        }
                     }
-                    counter!("jetstream_read_fail", "url" => stream.clone(), "reason" => "read error")
-                        .increment(1);
-                    // if we didn't immediately get ConnectionClosed, we should keep polling read
-                    // until we get it.
-                    continue;
                 }
             };
 

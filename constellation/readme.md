@@ -83,6 +83,15 @@ curl '<HOST>/links/all/count?target=did:plc:vc7f4oafdgxsihk4cry2xpze'
 ```
 
 
+## Contributions
+
+### Licensing
+
+Constellation's source code is currently available exclusively under the AGPL license (see [LICENSE](./LICENSE)).
+
+In the future, its code MAY become available under the MIT and/or Apache2.0 licenses, at the sole discretion of the microcosm organization. Contributing implies acceptance with this possible future licensing change. The change has not happed yet and is not guaranteed.
+
+
 some todos
 
 - [x] find links and write them to rocksdb

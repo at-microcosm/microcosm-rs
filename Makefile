@@ -5,7 +5,14 @@ test:
 	cargo test --all-features
 
 fmt:
-	cargo fmt --package links --package constellation --package ufos --package spacedust --package who-am-i --package slingshot
+	cargo fmt \
+						--package constellation \
+						--package microcosm-links \
+						--package pocket \
+						--package quasar \
+						--package slingshot \
+						--package spacedust \
+						--package ufos
 	cargo +nightly fmt --package jetstream
 
 clippy:

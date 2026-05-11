@@ -1,0 +1,57 @@
+{
+  "$type": "com.atproto.lexicon.schema",
+  "id": "blue.microcosm.repo.getRecordByUri",
+  "lexicon": 1,
+  "defs": {
+    "main": {
+      "description": "Get a single record from a repository by at-uri",
+      "errors": [
+        {
+          "name": "RecordNotFound"
+        }
+      ],
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "properties": {
+            "cid": {
+              "format": "cid",
+              "type": "string"
+            },
+            "uri": {
+              "format": "at-uri",
+              "type": "string"
+            },
+            "value": {
+              "type": "unknown"
+            }
+          },
+          "required": [
+            "uri",
+            "value"
+          ],
+          "type": "object"
+        }
+      },
+      "parameters": {
+        "properties": {
+          "cid": {
+            "description": "The CID of the version of the record. If not specified, then return the most recent version. If specified and a newer version of the record exists, returns 404 not found.",
+            "format": "cid",
+            "type": "string"
+          },
+          "at_uri": {
+            "description": "The at-uri of the record. The identifier can be a DID or an atproto handle. The collection and rkey segments must be present.",
+            "format": "at-uri",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at_uri"
+        ],
+        "type": "params"
+      },
+      "type": "query"
+    }
+  }
+}

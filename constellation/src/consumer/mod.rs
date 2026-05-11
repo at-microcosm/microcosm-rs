@@ -6,8 +6,8 @@ use crate::{ActionableEvent, RecordId};
 use anyhow::Result;
 use jetstream::consume_jetstream;
 use jsonl_file::consume_jsonl_file;
-use links::collect_links;
-use metrics::{counter, describe_counter, describe_histogram, histogram, Unit};
+use metrics::{counter, histogram};
+use microcosm_links::{parse_any_link, record::walk_record, CollectedLink};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -19,38 +19,30 @@ pub fn consume(
     mut store: impl LinkStorage,
     qsize: Arc<AtomicU32>,
     fixture: Option<PathBuf>,
+    fixture_preserve_cursor: bool,
     stream: String,
     staying_alive: CancellationToken,
 ) -> Result<()> {
-    describe_counter!(
-        "consumer_events_non_actionable",
-        Unit::Count,
-        "count of non-actionable events"
-    );
-    describe_counter!(
-        "consumer_events_actionable",
-        Unit::Count,
-        "count of action by type. *all* atproto record delete events are included"
-    );
-    describe_counter!(
-        "consumer_events_actionable_links",
-        Unit::Count,
-        "total links encountered"
-    );
-    describe_histogram!(
-        "consumer_events_actionable_links",
-        Unit::Count,
-        "number of links per message"
-    );
-
+    let mut fixture_cursor = None;
     let (receiver, consumer_handle) = if let Some(f) = fixture {
         let (sender, receiver) = flume::bounded(21);
+        if fixture_preserve_cursor {
+            fixture_cursor = store.get_cursor()?;
+            if fixture_cursor.is_none() {
+                anyhow::bail!(
+                    "--fixture-preserve-cursor was set but the database has no \
+                    existing cursor to preserve. either drop the flag (cursor \
+                    will be set to the last event in the fixture, current default \
+                    behavior) or run a live jetstream session first."
+                )
+            }
+        }
         (
             receiver,
             thread::spawn(move || consume_jsonl_file(f, sender)),
         )
     } else {
-        let (sender, receiver) = flume::bounded(32_768); // eek
+        let (sender, receiver) = flume::bounded(1024);
         let cursor = store.get_cursor().unwrap();
         (
             receiver,
@@ -61,7 +53,7 @@ pub fn consume(
     for update in receiver.iter() {
         if let Some((action, ts)) = get_actionable(&update) {
             {
-                store.push(&action, ts).unwrap();
+                store.push(&action, fixture_cursor.unwrap_or(ts)).unwrap();
                 qsize.store(receiver.len().try_into().unwrap(), Ordering::Relaxed);
             }
         } else {
@@ -99,7 +91,17 @@ pub fn get_actionable(event: &JsonValue) -> Option<(ActionableEvent, u64)> {
             };
             match commit.get("operation")? {
                 JsonValue::String(op) if op == "create" => {
-                    let links = collect_links(commit.get("record")?);
+                    let mut links = vec![];
+                    // 1. extract links (dids probably) from rkey, if there
+                    if let Some(target) = parse_any_link(rkey) {
+                        links.push(CollectedLink {
+                            path: ".".into(),
+                            target,
+                        });
+                    }
+                    // 2. and from the record body
+                    walk_record("", commit.get("record")?, &mut links);
+
                     counter!("consumer_events_actionable", "action_type" => "create_links", "collection" => collection.clone()).increment(1);
                     histogram!("consumer_events_actionable_links", "action_type" => "create_links", "collection" => collection.clone()).record(links.len() as f64);
                     for link in &links {
@@ -128,7 +130,17 @@ pub fn get_actionable(event: &JsonValue) -> Option<(ActionableEvent, u64)> {
                     }
                 }
                 JsonValue::String(op) if op == "update" => {
-                    let links = collect_links(commit.get("record")?);
+                    let mut links = vec![];
+                    // 1. extract links (dids probably) from rkey, if there
+                    if let Some(target) = parse_any_link(rkey) {
+                        links.push(CollectedLink {
+                            path: ".".into(),
+                            target,
+                        });
+                    }
+                    // 2. and from the record body
+                    walk_record("", commit.get("record")?, &mut links);
+
                     counter!("consumer_events_actionable", "action_type" => "update_links", "collection" => collection.clone()).increment(1);
                     histogram!("consumer_events_actionable_links", "action_type" => "update_links", "collection" => collection.clone()).record(links.len() as f64);
                     for link in &links {
@@ -200,7 +212,7 @@ pub fn get_actionable(event: &JsonValue) -> Option<(ActionableEvent, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use links::{CollectedLink, Link};
+    use microcosm_links::{CollectedLink, Link};
 
     #[test]
     fn test_create_like() {
@@ -334,6 +346,75 @@ mod tests {
             Some((
                 ActionableEvent::DeactivateAccount("did:plc:l4jb3hkq7lrblferbywxkiol".into()),
                 1736451745611273
+            ))
+        )
+    }
+
+    #[test]
+    fn test_create_vouch_indexes_did_rkey() {
+        let rec = r#"{
+            "did":"did:plc:voucher",
+            "time_us":1746460800000000,
+            "kind":"commit",
+            "commit":{"rev":"3lqrvouchcreate","operation":"create","collection":"sh.tangled.graph.vouch","rkey":"did:plc:vouchedfor","record":{
+                "$type":"sh.tangled.graph.vouch",
+                "createdAt":"2026-05-05T12:00:00.000Z"
+            }}
+        }"#.parse().unwrap();
+        let action = get_actionable(&rec);
+        assert_eq!(
+            action,
+            Some((
+                ActionableEvent::CreateLinks {
+                    record_id: RecordId {
+                        did: "did:plc:voucher".into(),
+                        collection: "sh.tangled.graph.vouch".into(),
+                        rkey: "did:plc:vouchedfor".into(),
+                    },
+                    links: vec![CollectedLink {
+                        path: ".".into(),
+                        target: Link::Did("did:plc:vouchedfor".into()),
+                    }],
+                },
+                1746460800000000
+            ))
+        )
+    }
+
+    #[test]
+    fn test_update_vouch_indexes_did_rkey() {
+        let rec = r#"{
+            "did":"did:plc:voucher",
+            "time_us":1746460800000001,
+            "kind":"commit",
+            "commit":{"rev":"3lqrvouchupdate","operation":"update","collection":"sh.tangled.graph.vouch","rkey":"did:plc:vouchedfor","record":{
+                "$type":"sh.tangled.graph.vouch",
+                "createdAt":"2026-05-05T12:00:00.000Z",
+                "reason":"https://atproto.com"
+            }}
+        }"#.parse().unwrap();
+        let action = get_actionable(&rec);
+        assert_eq!(
+            action,
+            Some((
+                ActionableEvent::UpdateLinks {
+                    record_id: RecordId {
+                        did: "did:plc:voucher".into(),
+                        collection: "sh.tangled.graph.vouch".into(),
+                        rkey: "did:plc:vouchedfor".into(),
+                    },
+                    new_links: vec![
+                        CollectedLink {
+                            path: ".".into(),
+                            target: Link::Did("did:plc:vouchedfor".into()),
+                        },
+                        CollectedLink {
+                            path: ".reason".into(),
+                            target: Link::Uri("https://atproto.com".into()),
+                        },
+                    ],
+                },
+                1746460800000001
             ))
         )
     }
