@@ -22,7 +22,7 @@ use atrium_api::{
 };
 use atrium_common::resolver::Resolver;
 use atrium_identity::{
-    did::{CommonDidResolver, CommonDidResolverConfig, DEFAULT_PLC_DIRECTORY_URL},
+    did::{CommonDidResolver, CommonDidResolverConfig},
     handle::{AtprotoHandleResolver, AtprotoHandleResolverConfig, DnsTxtResolver},
 };
 use atrium_oauth::DefaultHttpClient; // it's probably not worth bringing all of atrium_oauth for this but
@@ -194,6 +194,7 @@ impl Identity {
         cache_dir: impl AsRef<Path>,
         memory_mb: usize,
         disk_gb: usize,
+        plc_directory_url: String,
     ) -> Result<Self, IdentityError> {
         let http_client = Arc::new(DefaultHttpClient::default());
         let handle_resolver = AtprotoHandleResolver::new(AtprotoHandleResolverConfig {
@@ -201,7 +202,7 @@ impl Identity {
             http_client: http_client.clone(),
         });
         let did_resolver = CommonDidResolver::new(CommonDidResolverConfig {
-            plc_directory_url: DEFAULT_PLC_DIRECTORY_URL.to_string(),
+            plc_directory_url,
             http_client: http_client.clone(),
         });
 

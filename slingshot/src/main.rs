@@ -7,6 +7,7 @@ use slingshot::{
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use atrium_identity::did::DEFAULT_PLC_DIRECTORY_URL;
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
 
@@ -48,6 +49,10 @@ struct Args {
     #[arg(long, env = "SLINGSHOT_IDENTITY_CACHE_DISK_DB")]
     #[clap(default_value_t = 1)]
     identity_cache_disk_gb: usize,
+    /// the plc directory used to resolve did:plc identities
+    #[arg(long, env = "SLINGSHOT_PLC_DIRECTORY")]
+    #[clap(default_value = DEFAULT_PLC_DIRECTORY_URL)]
+    plc_directory: String,
     /// the domain pointing to this server
     ///
     /// if present:
@@ -140,6 +145,7 @@ async fn main() -> Result<(), String> {
         cache_dir.join("./identity"),
         args.identity_cache_memory_mb,
         args.identity_cache_disk_gb,
+        args.plc_directory,
     )
     .await
     .map_err(|e| format!("identity setup failed: {e:?}"))?;
