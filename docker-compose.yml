@@ -1,0 +1,30 @@
+# Mostly used as an example to show how to run microcosm-rs projects via Docker Compose.
+# Change as needed
+services:
+  constellation:
+    build:
+      context: .
+      dockerfile: ./constellation/Dockerfile
+    container_name: constellation
+    ports:
+      - "6789:6789" # link query HTTP API
+      - "8765:8765" # prometheus metrics
+    # Saves directly to a folder on disk
+    volumes:
+      - ./constellation-data:/data
+    command:
+      - "--jetstream"
+      - "us-east-1"
+      - "--backend"
+      - "rocks"
+      - "--data"
+      - "/data"
+      - "--bind"
+      - "0.0.0.0:6789"
+      - "--collect-metrics"
+      - "--bind-metrics"
+      - "0.0.0.0:8765"
+    restart: unless-stopped
+
+volumes:
+  constellation-data:
