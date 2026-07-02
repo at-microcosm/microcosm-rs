@@ -16,13 +16,18 @@ pub fn consume_jetstream(
     cursor: Option<u64>,
     stream: String,
     staying_alive: CancellationToken,
+    collections: Vec<String>,
 ) -> Result<()> {
     let dict = DecoderDictionary::copy(JETSTREAM_ZSTD_DICTIONARY);
     let mut connect_retries = 0;
     let mut latest_cursor = cursor;
+    let collections_qs: String = collections
+        .iter()
+        .map(|c| format!("&wantedCollections={c}"))
+        .collect();
     'outer: loop {
         let stream_url = format!(
-            "{stream}?compress=true{}",
+            "{stream}?compress=true{collections_qs}{}",
             latest_cursor
                 .map(|c| {
                     println!("starting with cursor from {:?} ago...", ts_age(c));
