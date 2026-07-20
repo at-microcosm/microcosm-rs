@@ -72,7 +72,7 @@ struct Args {
     print_cursor: bool,
     /// Only request these Jetstream collections; supports 'foo.bar.*' wildcards
     #[arg(long, value_delimiter = ',')]
-    collections: Vec<String>,
+    link_from_collections: Vec<String>,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -123,7 +123,7 @@ fn main() -> Result<()> {
 
     let collect_metrics = args.collect_metrics;
     let stay_alive = CancellationToken::new();
-    let collections = args.collections;
+    let link_from_collections = args.link_from_collections;
 
     match args.backend {
         StorageBackend::Memory => run(
@@ -137,7 +137,7 @@ fn main() -> Result<()> {
             metrics_bind,
             collect_metrics,
             stay_alive,
-            collections,
+            link_from_collections,
         ),
         #[cfg(feature = "rocks")]
         StorageBackend::Rocks => {
@@ -170,7 +170,7 @@ fn main() -> Result<()> {
                         metrics_bind,
                         collect_metrics,
                         stay_alive,
-                        collections,
+                        link_from_collections,
                     );
                     eprintln!("run finished: {r:?}");
                     r
@@ -194,7 +194,7 @@ fn run(
     metrics_bind: SocketAddr,
     collect_metrics: bool,
     stay_alive: CancellationToken,
-    collections: Vec<String>,
+    link_from_collections: Vec<String>,
 ) -> Result<()> {
     ctrlc::set_handler({
         let mut desperation: u8 = 0;
@@ -231,7 +231,7 @@ fn run(
                     fixture_preserve_cursor,
                     stream,
                     staying_alive,
-                    collections,
+                    link_from_collections,
                 ) {
                     eprintln!("jetstream finished with error: {e}");
                 }

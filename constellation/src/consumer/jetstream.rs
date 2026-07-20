@@ -16,12 +16,12 @@ pub fn consume_jetstream(
     cursor: Option<u64>,
     stream: String,
     staying_alive: CancellationToken,
-    collections: Vec<String>,
+    link_from_collections: Vec<String>,
 ) -> Result<()> {
     let dict = DecoderDictionary::copy(JETSTREAM_ZSTD_DICTIONARY);
     let mut connect_retries = 0;
     let mut latest_cursor = cursor;
-    let collections_qs: String = collections
+    let collections_qs: String = link_from_collections
         .iter()
         .map(|c| format!("&wantedCollections={c}"))
         .collect();

@@ -22,7 +22,7 @@ pub fn consume(
     fixture_preserve_cursor: bool,
     stream: String,
     staying_alive: CancellationToken,
-    collections: Vec<String>,
+    link_from_collections: Vec<String>,
 ) -> Result<()> {
     let mut fixture_cursor = None;
     let (receiver, consumer_handle) = if let Some(f) = fixture {
@@ -43,8 +43,8 @@ pub fn consume(
             thread::spawn(move || consume_jsonl_file(f, sender)),
         )
     } else {
-        if !collections.is_empty() {
-            println!("requesting only these jetstream collections: {collections:?}");
+        if !link_from_collections.is_empty() {
+            println!("requesting links only from these jetstream collections: {link_from_collections:?}");
         }
 
         let (sender, receiver) = flume::bounded(1024);
@@ -52,7 +52,7 @@ pub fn consume(
         (
             receiver,
             thread::spawn(move || {
-                consume_jetstream(sender, cursor, stream, staying_alive, collections)
+                consume_jetstream(sender, cursor, stream, staying_alive, link_from_collections)
             }),
         )
     };
