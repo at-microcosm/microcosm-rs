@@ -652,7 +652,13 @@ impl RocksStorage {
 
         // we do read -> modify -> write here: could merge-op in the deletes instead?
         // otherwise it's another single-thread-constraining thing.
+        let mut seen_targets = HashSet::new();
         for RecordLinkTarget(_, target_id) in record_link_targets.0 {
+            // remove_linker clears every entry for this record, and the read here doesn't see
+            // earlier writes in this batch, so only touch each target once.
+            if !seen_targets.insert(target_id.0) {
+                continue;
+            }
             self.update_target_linkers(batch, &target_id, |mut linkers| {
                 if linkers.0.is_empty() {
                     eprintln!("bug? linked target was missing when removing links");
@@ -1536,13 +1542,18 @@ pub struct TargetKey(pub Target, pub Collection, pub RPath);
 pub struct TargetLinkers(pub Vec<(DidId, RKey)>);
 
 impl TargetLinkers {
+    /// remove every entry for this linking record.
+    ///
+    /// creates are not de-duplicated (eg. a record re-created with the same rkey after a
+    /// missed delete), so a (did, rkey) can appear more than once. a delete removes the
+    /// record's forward links, so any copies left behind here could never be removed later.
     fn remove_linker(&mut self, did: &DidId, rkey: &RKey) -> bool {
-        if let Some(entry) = self.0.iter_mut().rfind(|d| **d == (*did, rkey.clone())) {
+        let mut removed = false;
+        for entry in self.0.iter_mut().filter(|d| d.0 == *did && d.1 == *rkey) {
             *entry = (DidId::empty(), RKey::empty());
-            true
-        } else {
-            false
+            removed = true;
         }
+        removed
     }
     pub fn count(&self) -> (u64, u64) {
         // (linkers, deleted links)

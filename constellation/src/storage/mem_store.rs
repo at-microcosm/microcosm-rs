@@ -56,16 +56,19 @@ impl MemStorage {
         if let Some(Some(link_targets)) = data.links.get(&record_id.did).map(|cr| cr.get(&repo_id))
         {
             let link_targets = link_targets.clone(); // satisfy borrowck
+            let linker = Some((record_id.did(), RKey(record_id.rkey())));
             for (record_path, target) in link_targets {
+                // creates aren't de-duplicated, so clear every entry for this record
                 data.targets
                     .get_mut(&target)
                     .expect("must have the target if we have a link saved")
                     .get_mut(&Source::new(&record_id.collection, &record_path.0))
                     .expect("must have the target at this path if we have a link to it saved")
                     .iter_mut()
-                    .rfind(|d| **d == Some((record_id.did(), RKey(record_id.rkey()))))
-                    .expect("must be in dids list if we have a link to it")
-                    .take();
+                    .filter(|d| **d == linker)
+                    .for_each(|d| {
+                        d.take();
+                    });
             }
         }
         data.links
