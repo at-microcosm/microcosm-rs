@@ -1,7 +1,7 @@
 # Multi-stage build for slingshot.
 #
 # The build context must be the workspace ROOT (microcosm-rs/)
-FROM rust:1.96-bookworm AS builder
+FROM rust:1.99.1-trixie@sha256:767c71592f7d1f3f242292000f8efd4e67b6732363da176772f4d220332e264f AS builder
 
 # aws-lc-sys (pulled in via rustls' default aws-lc-rs provider) builds a C
 # library with cmake and runs bindgen (needs libclang); reqwest's default-tls
@@ -26,12 +26,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release -p slingshot \
     && cp target/release/slingshot /usr/local/bin/slingshot
 
-FROM debian:12.14-slim AS runtime
+FROM debian:trixie-20261020-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS runtime
 
-# ca-certificates for TLS to jetstream/plc; libssl3 for native-tls at runtime.
+# ca-certificates for TLS to jetstream/plc; libssl3t64 for native-tls at runtime.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
-        libssl3 \
+        libssl3t64 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/local/bin/slingshot /usr/local/bin/slingshot
