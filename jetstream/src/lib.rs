@@ -394,7 +394,8 @@ impl JetstreamConnector {
             let max_retries = 300;
             let base_delay_ms = 1_000; // 1 second
             let max_delay_ms = 30_000; // 30 seconds
-            let success_threshold_s = 15; // 15 seconds, retry count is reset if we were connected at least this long
+            let success_threshold_s = 15; // 15 seconds, retry count is reset if we were connected
+                                          // at least this long
 
             let mut retry_attempt = 0;
             let mut connect_cursor = cursor;

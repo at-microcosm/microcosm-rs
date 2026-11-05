@@ -82,11 +82,11 @@ pub async fn consume(
                 };
                 if let Some(handle) = ident.handle {
                     metrics::counter!("identity_handle_refresh_queued", "reason" => "identity event").increment(1);
-                    identity.queue_refresh(IdentityKey::Handle(handle)).await;
+                    identity.refresh(IdentityKey::Handle(handle)).await;
                 }
                 metrics::counter!("identity_did_refresh_queued", "reason" => "identity event")
                     .increment(1);
-                identity.queue_refresh(IdentityKey::Did(ident.did)).await;
+                identity.refresh(IdentityKey::Did(ident.did)).await;
             }
             EventKind::Account => {} // TODO: handle account events (esp hiding content on deactivate, clearing on delete)
         }

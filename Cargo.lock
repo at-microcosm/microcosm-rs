@@ -281,8 +281,8 @@ version = "0.25.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "46355d3245edc7b3160b2a45fe55d09a6963ebd3eee0252feb6b72fb0eb71463"
 dependencies = [
- "atrium-common 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "atrium-xrpc 0.12.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "atrium-common",
+ "atrium-xrpc",
  "chrono",
  "http",
  "ipld-core",
@@ -298,11 +298,12 @@ dependencies = [
 
 [[package]]
 name = "atrium-api"
-version = "0.25.4"
-source = "git+https://github.com/uniphil/atrium.git?branch=fix%2Fresolve-handle-https-accept-whitespace#80a355991ac9b48ba3f559d12aac74f071fc638c"
+version = "0.26.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0b9945dc5f78b415822cd89a5b5823da949df1c6b698fcd3f9aa3a6f6631d92"
 dependencies = [
- "atrium-common 0.1.2 (git+https://github.com/uniphil/atrium.git?branch=fix%2Fresolve-handle-https-accept-whitespace)",
- "atrium-xrpc 0.12.3 (git+https://github.com/uniphil/atrium.git?branch=fix%2Fresolve-handle-https-accept-whitespace)",
+ "atrium-common",
+ "atrium-xrpc",
  "chrono",
  "http",
  "ipld-core",
@@ -312,29 +313,14 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "thiserror 1.0.69",
- "tokio",
  "trait-variant",
 ]
 
 [[package]]
 name = "atrium-common"
-version = "0.1.2"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ed5610654043faa396a5a15afac0ac646d76aebe45aebd7cef4f8b96b0ab7f4"
-dependencies = [
- "dashmap",
- "lru",
- "moka",
- "thiserror 1.0.69",
- "tokio",
- "trait-variant",
- "web-time",
-]
-
-[[package]]
-name = "atrium-common"
-version = "0.1.2"
-source = "git+https://github.com/uniphil/atrium.git?branch=fix%2Fresolve-handle-https-accept-whitespace#80a355991ac9b48ba3f559d12aac74f071fc638c"
+checksum = "98466259d2e6189ddf3439b96432d5303668b4d51c2a78996934d981065550f3"
 dependencies = [
  "dashmap",
  "lru",
@@ -364,9 +350,9 @@ version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c9e2d42bb4dbea038f4f5f45e3af2a89d61a9894a75f06aa550b74a60d2be380"
 dependencies = [
- "atrium-api 0.25.4 (registry+https://github.com/rust-lang/crates.io-index)",
- "atrium-common 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "atrium-xrpc 0.12.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "atrium-api 0.25.4",
+ "atrium-common",
+ "atrium-xrpc",
  "serde",
  "serde_html_form",
  "serde_json",
@@ -376,12 +362,13 @@ dependencies = [
 
 [[package]]
 name = "atrium-identity"
-version = "0.1.5"
-source = "git+https://github.com/uniphil/atrium.git?branch=fix%2Fresolve-handle-https-accept-whitespace#80a355991ac9b48ba3f559d12aac74f071fc638c"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae3bda4520cce401f1de0fb4ac5ff18b5574d324d9d5e0fa28dc684278be9e96"
 dependencies = [
- "atrium-api 0.25.4 (git+https://github.com/uniphil/atrium.git?branch=fix%2Fresolve-handle-https-accept-whitespace)",
- "atrium-common 0.1.2 (git+https://github.com/uniphil/atrium.git?branch=fix%2Fresolve-handle-https-accept-whitespace)",
- "atrium-xrpc 0.12.3 (git+https://github.com/uniphil/atrium.git?branch=fix%2Fresolve-handle-https-accept-whitespace)",
+ "atrium-api 0.26.0",
+ "atrium-common",
+ "atrium-xrpc",
  "serde",
  "serde_html_form",
  "serde_json",
@@ -395,38 +382,10 @@ version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca22dc4eaf77fd9bf050b21192ac58cd654a437d28e000ec114ebd93a51d36f5"
 dependencies = [
- "atrium-api 0.25.4 (registry+https://github.com/rust-lang/crates.io-index)",
- "atrium-common 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "atrium-identity 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
- "atrium-xrpc 0.12.3 (registry+https://github.com/rust-lang/crates.io-index)",
- "base64 0.22.1",
- "chrono",
- "dashmap",
- "ecdsa",
- "elliptic-curve",
- "jose-jwa",
- "jose-jwk",
- "p256",
- "rand 0.8.5",
- "reqwest",
- "serde",
- "serde_html_form",
- "serde_json",
- "sha2",
- "thiserror 1.0.69",
- "tokio",
- "trait-variant",
-]
-
-[[package]]
-name = "atrium-oauth"
-version = "0.1.3"
-source = "git+https://github.com/uniphil/atrium.git?branch=fix%2Fresolve-handle-https-accept-whitespace#80a355991ac9b48ba3f559d12aac74f071fc638c"
-dependencies = [
- "atrium-api 0.25.4 (git+https://github.com/uniphil/atrium.git?branch=fix%2Fresolve-handle-https-accept-whitespace)",
- "atrium-common 0.1.2 (git+https://github.com/uniphil/atrium.git?branch=fix%2Fresolve-handle-https-accept-whitespace)",
- "atrium-identity 0.1.5 (git+https://github.com/uniphil/atrium.git?branch=fix%2Fresolve-handle-https-accept-whitespace)",
- "atrium-xrpc 0.12.3 (git+https://github.com/uniphil/atrium.git?branch=fix%2Fresolve-handle-https-accept-whitespace)",
+ "atrium-api 0.25.4",
+ "atrium-common",
+ "atrium-identity 0.1.5",
+ "atrium-xrpc",
  "base64 0.22.1",
  "chrono",
  "dashmap",
@@ -448,22 +407,9 @@ dependencies = [
 
 [[package]]
 name = "atrium-xrpc"
-version = "0.12.3"
+version = "0.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0216ad50ce34e9ff982e171c3659e65dedaa2ed5ac2994524debdc9a9647ffa8"
-dependencies = [
- "http",
- "serde",
- "serde_html_form",
- "serde_json",
- "thiserror 1.0.69",
- "trait-variant",
-]
-
-[[package]]
-name = "atrium-xrpc"
-version = "0.12.3"
-source = "git+https://github.com/uniphil/atrium.git?branch=fix%2Fresolve-handle-https-accept-whitespace#80a355991ac9b48ba3f559d12aac74f071fc638c"
+checksum = "944b35cc08732d40ddbb3356be9e38d11aed4b4c40c33f5b0f235e0650eff296"
 dependencies = [
  "http",
  "serde",
@@ -2191,8 +2137,6 @@ version = "0.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf151400ff0baff5465007dd2f3e717f3fe502074ca563069ce3a6629d07b289"
 dependencies = [
- "allocator-api2",
- "equivalent",
  "foldhash 0.1.5",
 ]
 
@@ -2797,7 +2741,7 @@ version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
- "atrium-api 0.25.4 (git+https://github.com/uniphil/atrium.git?branch=fix%2Fresolve-handle-https-accept-whitespace)",
+ "atrium-api 0.26.0",
  "chrono",
  "clap",
  "futures-util",
@@ -3113,11 +3057,11 @@ dependencies = [
 
 [[package]]
 name = "lru"
-version = "0.12.5"
+version = "0.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "234cf4f4a04dc1f57e24b96cc0cd600cf2af460d4161ac5ecdd0af8e1f3b2a38"
+checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
 dependencies = [
- "hashbrown 0.15.2",
+ "hashbrown 0.16.1",
 ]
 
 [[package]]
@@ -5240,10 +5184,9 @@ name = "slingshot"
 version = "0.1.0"
 dependencies = [
  "async-stream",
- "atrium-api 0.25.4 (git+https://github.com/uniphil/atrium.git?branch=fix%2Fresolve-handle-https-accept-whitespace)",
- "atrium-common 0.1.2 (git+https://github.com/uniphil/atrium.git?branch=fix%2Fresolve-handle-https-accept-whitespace)",
- "atrium-identity 0.1.5 (git+https://github.com/uniphil/atrium.git?branch=fix%2Fresolve-handle-https-accept-whitespace)",
- "atrium-oauth 0.1.3 (git+https://github.com/uniphil/atrium.git?branch=fix%2Fresolve-handle-https-accept-whitespace)",
+ "atrium-api 0.26.0",
+ "atrium-common",
+ "atrium-identity 0.2.0",
  "clap",
  "ctrlc",
  "foyer",
@@ -6341,10 +6284,10 @@ dependencies = [
 name = "who-am-i"
 version = "0.1.0"
 dependencies = [
- "atrium-api 0.25.4 (registry+https://github.com/rust-lang/crates.io-index)",
- "atrium-common 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "atrium-identity 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
- "atrium-oauth 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "atrium-api 0.25.4",
+ "atrium-common",
+ "atrium-identity 0.1.5",
+ "atrium-oauth",
  "axum",
  "axum-extra",
  "axum-template",

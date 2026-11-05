@@ -39,9 +39,6 @@ pub enum IdentityError {
     #[error("found handle {0:?} but it appears invalid: {1}")]
     InvalidHandle(String, &'static str),
 
-    #[error("could not convert atrium did doc to partial mini doc: {0}")]
-    BadDidDoc(String),
-
     #[error("wrong key for clearing refresh queue: {0}")]
     RefreshQueueKeyError(&'static str),
 }
