@@ -44,7 +44,9 @@ pub fn consume(
         )
     } else {
         if !link_from_collections.is_empty() {
-            println!("requesting links only from these jetstream collections: {link_from_collections:?}");
+            println!(
+                "requesting links only from these jetstream collections: {link_from_collections:?}"
+            );
         }
 
         let (sender, receiver) = flume::bounded(1024);
