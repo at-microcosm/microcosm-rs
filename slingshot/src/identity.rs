@@ -298,6 +298,11 @@ impl Identity {
         })
     }
 
+    pub async fn close(self) -> Result<(), foyer::Error> {
+        self.cache.close().await?;
+        Ok(())
+    }
+
     /// Resolve (and verify!) an atproto handle to a DID
     ///
     /// The result can be stale

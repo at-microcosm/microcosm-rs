@@ -256,6 +256,13 @@ async fn main() -> Result<(), String> {
             .map_err(MainTaskError::FirehoseCacheCloseError)
     });
 
+    tasks.spawn(async move {
+        identity
+            .close()
+            .await
+            .map_err(MainTaskError::IdentityCacheCloseError)
+    });
+
     tokio::select! {
         _ = async {
             while let Some(completed) = tasks.join_next().await {

@@ -64,6 +64,8 @@ pub enum MainTaskError {
     HealthCheckError(#[from] HealthCheckError),
     #[error("firehose cache failed to close: {0}")]
     FirehoseCacheCloseError(foyer::Error),
+    #[error("identity cache failed to close: {0}")]
+    IdentityCacheCloseError(foyer::Error),
 }
 
 #[derive(Debug, Error)]
