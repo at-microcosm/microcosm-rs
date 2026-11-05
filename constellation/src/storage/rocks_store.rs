@@ -627,12 +627,12 @@ impl RocksStorage {
                 RPath(path.clone()),
             );
             let target_id = if let Some(id) = found_target_ids.get(&target_key) {
-                id.clone()
+                *id
             } else {
                 let id = self
                     .target_id_table
                     .get_or_create_id_val(&self.db, batch, &target_key)?;
-                found_target_ids.insert(target_key, id.clone());
+                found_target_ids.insert(target_key, id);
                 id
             };
             self.merge_target_linker(batch, &target_id, &did_id, &RKey(record_id.rkey()));

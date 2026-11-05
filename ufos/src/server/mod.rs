@@ -430,7 +430,7 @@ async fn get_collections(
         } else {
             let cursor = q
                 .cursor
-                .and_then(|c| if c.is_empty() { None } else { Some(c) })
+                .filter(|c| !c.is_empty())
                 .map(|c| URL_SAFE_NO_PAD.decode(&c))
                 .transpose()
                 .map_err(|e| HttpError::for_bad_request(None, format!("invalid cursor: {e:?}")))?;
@@ -563,7 +563,7 @@ async fn get_prefix(
         } else {
             let cursor = q
                 .cursor
-                .and_then(|c| if c.is_empty() { None } else { Some(c) })
+                .filter(|c| !c.is_empty())
                 .map(|c| URL_SAFE_NO_PAD.decode(&c))
                 .transpose()
                 .map_err(|e| HttpError::for_bad_request(None, format!("invalid cursor: {e:?}")))?;
