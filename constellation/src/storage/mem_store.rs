@@ -16,6 +16,10 @@ pub struct MemStorage(Arc<Mutex<MemStorageData>>);
 
 type Linkers = Vec<Option<(Did, RKey)>>; // optional because we replace with None for deleted links to keep cursors stable
 
+/// simplified in-memory data model
+///
+/// constellation keeps forward links and backlinks, and should always have
+/// exactly one forward link for each backlink (and vice-versa).
 #[derive(Debug, Default)]
 struct MemStorageData {
     dids: HashMap<Did, bool>,                           // bool: active or nah
@@ -56,7 +60,6 @@ impl MemStorage {
         if let Some(Some(link_targets)) = data.links.get(&record_id.did).map(|cr| cr.get(&repo_id))
         {
             let link_targets = link_targets.clone(); // satisfy borrowck
-            let linker = Some((record_id.did(), RKey(record_id.rkey())));
             for (record_path, target) in link_targets {
                 // creates aren't de-duplicated, so clear every entry for this record
                 data.targets
@@ -65,10 +68,9 @@ impl MemStorage {
                     .get_mut(&Source::new(&record_id.collection, &record_path.0))
                     .expect("must have the target at this path if we have a link to it saved")
                     .iter_mut()
-                    .filter(|d| **d == linker)
-                    .for_each(|d| {
-                        d.take();
-                    });
+                    .rfind(|d| **d == Some((record_id.did(), RKey(record_id.rkey()))))
+                    .expect("must be in dids list if we have a link to it")
+                    .take();
             }
         }
         data.links

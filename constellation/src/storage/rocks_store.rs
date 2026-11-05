@@ -616,15 +616,25 @@ impl RocksStorage {
         );
         let mut record_link_targets = RecordLinkTargets::with_capacity(links.len());
 
+        // avoid double-id-interning (and dangling the first link target) if a
+        // record has multiple links from the same new (path + target)
+        let mut found_target_ids: HashMap<TargetKey, TargetId> = HashMap::new();
+
         for CollectedLink { target, path } in links {
             let target_key = TargetKey(
                 Target(target.clone().into_string()),
                 Collection(record_id.collection()),
                 RPath(path.clone()),
             );
-            let target_id =
-                self.target_id_table
+            let target_id = if let Some(id) = found_target_ids.get(&target_key) {
+                id.clone()
+            } else {
+                let id = self
+                    .target_id_table
                     .get_or_create_id_val(&self.db, batch, &target_key)?;
+                found_target_ids.insert(target_key, id.clone());
+                id
+            };
             self.merge_target_linker(batch, &target_id, &did_id, &RKey(record_id.rkey()));
 
             record_link_targets.add(RecordLinkTarget(RPath(path.clone()), target_id))
@@ -654,8 +664,9 @@ impl RocksStorage {
         // otherwise it's another single-thread-constraining thing.
         let mut seen_targets = HashSet::new();
         for RecordLinkTarget(_, target_id) in record_link_targets.0 {
-            // remove_linker clears every entry for this record, and the read here doesn't see
-            // earlier writes in this batch, so only touch each target once.
+            // if the record had multiple links to the target from the same
+            // path, remove_linker would already clear them all (to catch
+            // dups from multiple 'create' events).
             if !seen_targets.insert(target_id.0) {
                 continue;
             }
@@ -1535,7 +1546,7 @@ struct TargetId(u64); // key
 pub struct Target(pub String); // the actual target/uri
 
 // targets (uris, dids, etc.): the reverse index
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct TargetKey(pub Target, pub Collection, pub RPath);
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -1544,10 +1555,11 @@ pub struct TargetLinkers(pub Vec<(DidId, RKey)>);
 impl TargetLinkers {
     /// remove every entry for this linking record.
     ///
-    /// creates are not de-duplicated (eg. a record re-created with the same rkey after a
-    /// missed delete), so a (did, rkey) can appear more than once. a delete removes the
-    /// record's forward links, so any copies left behind here could never be removed later.
+    /// returns `false` if there were none
     fn remove_linker(&mut self, did: &DidId, rkey: &RKey) -> bool {
+        // creates are not de-duplicated (eg. a record re-created with the same
+        // rkey after a missed delete), so a (did, rkey) can appear more than
+        // once. looping ensures we catch any potential duplicate.
         let mut removed = false;
         for entry in self.0.iter_mut().filter(|d| d.0 == *did && d.1 == *rkey) {
             *entry = (DidId::empty(), RKey::empty());

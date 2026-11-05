@@ -517,6 +517,73 @@ mod tests {
         );
     });
 
+    test_each_storage!(delete_one_of_two_records_with_same_link, |storage| {
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "A".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("e.com".into()),
+                    path: ".xyz[].uri".into(),
+                }],
+            },
+            0,
+        )?;
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "B".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("e.com".into()),
+                        path: ".xyz[].uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("e.com".into()),
+                        path: ".xyz[].uri".into(),
+                    },
+                ],
+            },
+            0,
+        )?;
+        assert_eq!(storage.get_count("e.com", "app.t.c", ".xyz[].uri")?, 3);
+
+        storage.push(
+            &ActionableEvent::DeleteRecord(RecordId {
+                did: "did:plc:asdf".into(),
+                collection: "app.t.c".into(),
+                rkey: "B".into(),
+            }),
+            0,
+        )?;
+        assert_eq!(storage.get_count("e.com", "app.t.c", ".xyz[].uri")?, 1);
+        assert_eq!(
+            storage
+                .get_links(
+                    "e.com",
+                    "app.t.c",
+                    ".xyz[].uri",
+                    Order::NewestToOldest,
+                    100,
+                    None,
+                    &HashSet::default()
+                )?
+                .items,
+            vec![RecordId {
+                did: "did:plc:asdf".into(),
+                collection: "app.t.c".into(),
+                rkey: "A".into(),
+            }],
+            "the link from the original is the survivor"
+        );
+    });
+
     test_each_storage!(delete_record_linking_same_target_twice, |storage| {
         storage.push(
             &ActionableEvent::CreateLinks {
@@ -538,7 +605,7 @@ mod tests {
             },
             0,
         )?;
-        assert!(storage.get_count("e.com", "app.t.c", ".xyz[].uri")? > 0);
+        assert_eq!(storage.get_count("e.com", "app.t.c", ".xyz[].uri")?, 2);
 
         storage.push(
             &ActionableEvent::DeleteRecord(RecordId {
