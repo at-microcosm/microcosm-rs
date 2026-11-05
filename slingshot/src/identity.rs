@@ -1,4 +1,4 @@
-use hickory_resolver::{ResolveError, TokioResolver};
+use hickory_resolver::{TokioResolver, net::NetError, proto::rr::RData};
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
@@ -564,8 +564,8 @@ impl Identity {
 pub struct HickoryDnsTxtResolver(TokioResolver);
 
 impl HickoryDnsTxtResolver {
-    fn new() -> Result<Self, ResolveError> {
-        Ok(Self(TokioResolver::builder_tokio()?.build()))
+    fn new() -> Result<Self, NetError> {
+        Ok(Self(TokioResolver::builder_tokio()?.build()?))
     }
 }
 
@@ -577,7 +577,13 @@ impl DnsTxtResolver for HickoryDnsTxtResolver {
         match self.0.txt_lookup(query).await {
             Ok(r) => {
                 metrics::counter!("whoami_resolve_dns_txt", "success" => "true").increment(1);
-                Ok(r.iter().map(|r| r.to_string()).collect())
+                Ok(r.answers()
+                    .iter()
+                    .filter_map(|record| match &record.data {
+                        RData::TXT(txt) => Some(txt.to_string()),
+                        _ => None,
+                    })
+                    .collect())
             }
             Err(e) => {
                 metrics::counter!("whoami_resolve_dns_txt", "success" => "false").increment(1);

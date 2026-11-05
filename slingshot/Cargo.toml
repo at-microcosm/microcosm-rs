@@ -4,14 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-atrium-api = { git = "https://github.com/uniphil/atrium.git", branch = "fix/resolve-handle-https-accept-whitespace", default-features = false }
-atrium-common = { git = "https://github.com/uniphil/atrium.git", branch = "fix/resolve-handle-https-accept-whitespace" }
-atrium-identity = { git = "https://github.com/uniphil/atrium.git", branch = "fix/resolve-handle-https-accept-whitespace" }
-atrium-oauth = { git = "https://github.com/uniphil/atrium.git", branch = "fix/resolve-handle-https-accept-whitespace" }
+atrium-api = { version = "0.26.0", default-features = false }
+atrium-common = "0.1.4"
+atrium-identity = "0.2.0"
+atrium-oauth = "0.2.0"
 clap = { workspace = true }
 ctrlc = "3.4.7"
 foyer = { version = "0.22.3", features = ["serde"] }
-hickory-resolver = "0.25.2"
+hickory-resolver = "0.26.3"
 jetstream = { path = "../jetstream", features = ["metrics"] }
 microcosm-links = { path = "../links" }
 log = "0.4.27"

@@ -12,7 +12,7 @@ bincode = { version = "2.0.1", features = ["serde"] }
 cardinality-estimator-safe = { version = "4.0.3", features = ["with_serde", "with_digest"] }
 chrono = { version = "0.4.41", features = ["serde"] }
 clap = { workspace = true }
-dropshot = "0.16.0"
+dropshot = "0.18.0"
 env_logger = "0.11.7"
 fjall = { git = "https://github.com/fjall-rs/fjall.git", rev = "fb229572bb7d1d6966a596994dc1708e47ec57d8", features = ["lz4"] }
 getrandom = "0.3.3"

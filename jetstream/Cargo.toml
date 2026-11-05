@@ -10,11 +10,11 @@ readme = "README.md"
 
 [dependencies]
 async-trait = "0.1.83"
-atrium-api = { git = "https://github.com/uniphil/atrium.git", branch = "fix/resolve-handle-https-accept-whitespace", default-features = false, features = [
+atrium-api = { version = "0.26.0", default-features = false, features = [
     "namespace-appbsky",
 ] }
 tokio = { version = "1.44.2", features = ["full", "sync", "time"] }
-tokio-tungstenite = { version = "0.26.2", features = [
+tokio-tungstenite = { version = "0.30.0", features = [
     "connect",
     "native-tls-vendored",
     "url",
