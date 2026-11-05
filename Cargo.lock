@@ -270,7 +270,6 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "thiserror 1.0.69",
- "tokio",
  "trait-variant",
 ]
 
@@ -316,35 +315,6 @@ dependencies = [
  "serde_html_form",
  "serde_json",
  "thiserror 1.0.69",
- "trait-variant",
-]
-
-[[package]]
-name = "atrium-oauth"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac7ed967de199d5e35e86917d2034e7981d3e406248a0b4f01100edabb26ade4"
-dependencies = [
- "atrium-api",
- "atrium-common",
- "atrium-identity",
- "atrium-xrpc",
- "base64 0.22.1",
- "chrono",
- "dashmap",
- "ecdsa",
- "elliptic-curve",
- "jose-jwa",
- "jose-jwk",
- "p256",
- "rand 0.8.8",
- "reqwest",
- "serde",
- "serde_html_form",
- "serde_json",
- "sha2",
- "thiserror 1.0.69",
- "tokio",
  "trait-variant",
 ]
 
@@ -2954,40 +2924,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jose-b64"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bec69375368709666b21c76965ce67549f2d2db7605f1f8707d17c9656801b56"
-dependencies = [
- "base64ct",
- "serde",
- "subtle",
- "zeroize",
-]
-
-[[package]]
-name = "jose-jwa"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ab78e053fe886a351d67cf0d194c000f9d0dcb92906eb34d853d7e758a4b3a7"
-dependencies = [
- "serde",
-]
-
-[[package]]
-name = "jose-jwk"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "280fa263807fe0782ecb6f2baadc28dffc04e00558a58e33bfdb801d11fd58e7"
-dependencies = [
- "jose-b64",
- "jose-jwa",
- "p256",
- "serde",
- "zeroize",
-]
-
-[[package]]
 name = "js-sys"
 version = "0.3.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3953,8 +3889,8 @@ dependencies = [
  "clap",
  "jwt-compact",
  "log",
- "poem",
- "poem-openapi",
+ "poem 3.1.12 (registry+https://github.com/rust-lang/crates.io-index)",
+ "poem-openapi 5.1.16 (registry+https://github.com/rust-lang/crates.io-index)",
  "reqwest",
  "rusqlite",
  "serde",
@@ -3987,7 +3923,7 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "pin-project-lite",
- "poem-derive",
+ "poem-derive 3.1.12 (registry+https://github.com/rust-lang/crates.io-index)",
  "quick-xml 0.36.2",
  "rcgen",
  "regex",
@@ -4009,7 +3945,54 @@ dependencies = [
  "tokio-util",
  "tracing",
  "wildmatch",
- "x509-parser",
+ "x509-parser 0.17.0",
+]
+
+[[package]]
+name = "poem"
+version = "3.1.12"
+source = "git+https://github.com/uniphil/poem.git?branch=acme%2Fissue-async#cbb529a475e3b86f72483bba7fe4fc6fd416dda0"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "futures-util",
+ "headers",
+ "http",
+ "http-body-util",
+ "httpdate",
+ "hyper",
+ "hyper-util",
+ "mime",
+ "mime_guess",
+ "multer",
+ "nix 0.30.1",
+ "parking_lot",
+ "percent-encoding",
+ "pin-project-lite",
+ "poem-derive 3.1.12 (git+https://github.com/uniphil/poem.git?branch=acme%2Fissue-async)",
+ "quick-xml 0.36.2",
+ "rcgen",
+ "regex",
+ "reqwest",
+ "rfc7239",
+ "ring",
+ "rustls-pemfile",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "serde_yaml",
+ "smallvec",
+ "sync_wrapper",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-rustls",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "wildmatch",
+ "x509-parser 0.18.1",
 ]
 
 [[package]]
@@ -4017,6 +4000,17 @@ name = "poem-derive"
 version = "3.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "056e2fea6de1cb240ffe23cfc4fc370b629f8be83b5f27e16b7acd5231a72de4"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "poem-derive"
+version = "3.1.12"
+source = "git+https://github.com/uniphil/poem.git?branch=acme%2Fissue-async#cbb529a475e3b86f72483bba7fe4fc6fd416dda0"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -4038,8 +4032,33 @@ dependencies = [
  "itertools 0.14.0",
  "mime",
  "num-traits",
- "poem",
- "poem-openapi-derive",
+ "poem 3.1.12 (registry+https://github.com/rust-lang/crates.io-index)",
+ "poem-openapi-derive 5.1.16 (registry+https://github.com/rust-lang/crates.io-index)",
+ "quick-xml 0.36.2",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "serde_yaml",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "poem-openapi"
+version = "5.1.16"
+source = "git+https://github.com/uniphil/poem.git?branch=acme%2Fissue-async#cbb529a475e3b86f72483bba7fe4fc6fd416dda0"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "derive_more",
+ "futures-util",
+ "indexmap 2.14.2",
+ "itertools 0.14.0",
+ "mime",
+ "num-traits",
+ "poem 3.1.12 (git+https://github.com/uniphil/poem.git?branch=acme%2Fissue-async)",
+ "poem-openapi-derive 5.1.16 (git+https://github.com/uniphil/poem.git?branch=acme%2Fissue-async)",
  "quick-xml 0.36.2",
  "regex",
  "serde",
@@ -4055,6 +4074,23 @@ name = "poem-openapi-derive"
 version = "5.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "41273b691a3d467a8c44d05506afba9f7b6bd56c9cdf80123de13fe52d7ec587"
+dependencies = [
+ "darling 0.20.11",
+ "http",
+ "indexmap 2.14.2",
+ "mime",
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "syn 2.0.119",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "poem-openapi-derive"
+version = "5.1.16"
+source = "git+https://github.com/uniphil/poem.git?branch=acme%2Fissue-async#cbb529a475e3b86f72483bba7fe4fc6fd416dda0"
 dependencies = [
  "darling 0.20.11",
  "http",
@@ -5179,10 +5215,10 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 name = "slingshot"
 version = "0.1.0"
 dependencies = [
+ "async-stream",
  "atrium-api",
  "atrium-common",
  "atrium-identity",
- "atrium-oauth",
  "clap",
  "ctrlc",
  "foyer",
@@ -5191,9 +5227,10 @@ dependencies = [
  "log",
  "metrics",
  "metrics-exporter-prometheus 0.17.2",
+ "metrics-util",
  "microcosm-links",
- "poem",
- "poem-openapi",
+ "poem 3.1.12 (git+https://github.com/uniphil/poem.git?branch=acme%2Fissue-async)",
+ "poem-openapi 5.1.16 (git+https://github.com/uniphil/poem.git?branch=acme%2Fissue-async)",
  "reqwest",
  "rustls",
  "serde",
@@ -6022,6 +6059,7 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]
@@ -6603,6 +6641,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "x509-parser"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d43b0f71ce057da06bc0851b23ee24f3f86190b07203dd8f567d0b706a185202"
+dependencies = [
+ "asn1-rs",
+ "data-encoding",
+ "der-parser",
+ "lazy_static",
+ "nom",
+ "oid-registry",
+ "rusticata-macros",
+ "thiserror 2.0.21",
+ "time",
+]
+
+[[package]]
 name = "xxhash-rust"
 version = "0.8.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6687,7 +6742,6 @@ version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
 dependencies = [
- "serde",
  "zeroize_derive",
 ]
 

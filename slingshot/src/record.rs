@@ -11,8 +11,8 @@ use url::Url;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RawRecord {
-    cid: Cid,
-    record: String,
+    pub cid: Cid,
+    pub record: String,
 }
 
 // TODO: should be able to do typed CID

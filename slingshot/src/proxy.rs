@@ -1,0 +1,601 @@
+use crate::{Identity, error::ProxyError, server::HydrationSource};
+use atrium_api::types::string::{AtIdentifier, Cid, Did, Nsid, RecordKey};
+use reqwest::Client;
+use serde_json::{Map, Value};
+use std::{collections::HashMap, time::Duration};
+use url::Url;
+
+pub enum ParamValue {
+    String(Vec<String>),
+    Int(Vec<i64>),
+    Bool(Vec<bool>),
+}
+pub struct Params(HashMap<String, ParamValue>);
+
+impl TryFrom<Map<String, Value>> for Params {
+    type Error = (); // TODO
+    fn try_from(val: Map<String, Value>) -> Result<Self, Self::Error> {
+        let mut out = HashMap::new();
+        for (k, v) in val {
+            match v {
+                Value::String(s) => out.insert(k, ParamValue::String(vec![s])),
+                Value::Bool(b) => out.insert(k, ParamValue::Bool(vec![b])),
+                Value::Number(n) => {
+                    let Some(i) = n.as_i64() else {
+                        return Err(());
+                    };
+                    out.insert(k, ParamValue::Int(vec![i]))
+                }
+                Value::Array(a) => {
+                    let Some(first) = a.first() else {
+                        continue;
+                    };
+                    if first.is_string() {
+                        let mut vals = Vec::with_capacity(a.len());
+                        for v in a {
+                            let Some(v) = v.as_str() else {
+                                return Err(());
+                            };
+                            vals.push(v.to_string());
+                        }
+                        out.insert(k, ParamValue::String(vals));
+                    } else if first.is_i64() {
+                        let mut vals = Vec::with_capacity(a.len());
+                        for v in a {
+                            let Some(v) = v.as_i64() else {
+                                return Err(());
+                            };
+                            vals.push(v);
+                        }
+                        out.insert(k, ParamValue::Int(vals));
+                    } else if first.is_boolean() {
+                        let mut vals = Vec::with_capacity(a.len());
+                        for v in a {
+                            let Some(v) = v.as_bool() else {
+                                return Err(());
+                            };
+                            vals.push(v);
+                        }
+                        out.insert(k, ParamValue::Bool(vals));
+                    }
+                    todo!();
+                }
+                _ => return Err(()),
+            };
+        }
+
+        Ok(Self(out))
+    }
+}
+
+#[derive(Clone)]
+pub struct Proxy {
+    identity: Identity,
+    client: Client,
+}
+
+impl Proxy {
+    pub fn new(identity: Identity) -> Self {
+        let client = Client::builder()
+            .user_agent(format!(
+                "microcosm slingshot v{} (contact: @bad-example.com)",
+                env!("CARGO_PKG_VERSION")
+            ))
+            .no_proxy()
+            .timeout(Duration::from_secs(6))
+            .build()
+            .unwrap();
+        Self { client, identity }
+    }
+
+    pub async fn proxy(
+        &self,
+        service_did: &Did,
+        service_id: &str,
+        xrpc: &Nsid,
+        authorization: Option<&str>,
+        atproto_accept_labelers: Option<&str>,
+        params: Option<Map<String, Value>>,
+    ) -> Result<Value, ProxyError> {
+        let mut upstream: Url = self
+            .identity
+            .did_to_mini_service_doc(service_did)
+            .await?
+            .ok_or(ProxyError::ServiceNotFound)?
+            .get(service_id, None)
+            .ok_or(ProxyError::ServiceNotMatched)?
+            .endpoint
+            .parse()?;
+
+        upstream.set_path(&format!("/xrpc/{}", xrpc.as_str()));
+
+        if let Some(params) = params {
+            let mut query = upstream.query_pairs_mut();
+            let Params(ps) = params.try_into().expect("valid params");
+            for (k, pvs) in ps {
+                match pvs {
+                    ParamValue::String(s) => {
+                        for s in s {
+                            query.append_pair(&k, &s);
+                        }
+                    }
+                    ParamValue::Int(i) => {
+                        for i in i {
+                            query.append_pair(&k, &i.to_string());
+                        }
+                    }
+                    ParamValue::Bool(b) => {
+                        for b in b {
+                            query.append_pair(&k, &b.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        // TODO i mean maybe we should look for headers also in our headers but not obviously
+        let mut headers = reqwest::header::HeaderMap::new();
+        // TODO: check the jwt aud against the upstream!!!
+        if let Some(auth) = authorization {
+            headers.insert("Authorization", auth.try_into()?);
+        }
+        if let Some(aal) = atproto_accept_labelers {
+            headers.insert("atproto-accept-labelers", aal.try_into()?);
+        }
+
+        let t0 = std::time::Instant::now();
+        let res = self
+            .client
+            .get(upstream)
+            .headers(headers)
+            .send()
+            .await
+            .and_then(|r| r.error_for_status());
+
+        if res.is_ok() {
+            metrics::histogram!("slingshot_proxy_upstream_request", "success" => "true")
+                .record(t0.elapsed());
+        } else {
+            metrics::histogram!("slingshot_proxy_upstream_request", "success" => "false")
+                .record(t0.elapsed());
+        }
+
+        Ok(res?.json().await?)
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum PathPart {
+    Scalar(String),
+    Vector(String, Option<String>), // key, $type
+}
+
+pub fn parse_record_path(input: &str) -> Result<Vec<PathPart>, String> {
+    let mut out = Vec::new();
+
+    let mut key_acc = String::new();
+    let mut type_acc = String::new();
+    let mut in_bracket = false;
+    let mut chars = input.chars().enumerate();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '[' if in_bracket => return Err(format!("nested opening bracket not allowed, at {i}")),
+            '[' if key_acc.is_empty() => {
+                return Err(format!("missing key before opening bracket, at {i}"));
+            }
+            '[' => in_bracket = true,
+            ']' if in_bracket => {
+                in_bracket = false;
+                let key = std::mem::take(&mut key_acc);
+                let r#type = std::mem::take(&mut type_acc);
+                let t = if r#type.is_empty() {
+                    None
+                } else {
+                    Some(r#type)
+                };
+                out.push(PathPart::Vector(key, t));
+                // peek ahead because we need a dot after array if there's more and i don't want to add more loop state
+                let Some((i, c)) = chars.next() else {
+                    break;
+                };
+                if c != '.' {
+                    return Err(format!(
+                        "expected dot after close bracket, found {c:?} at {i}"
+                    ));
+                }
+            }
+            ']' => return Err(format!("unexpected close bracket at {i}")),
+            '.' if in_bracket => type_acc.push(c),
+            '.' if key_acc.is_empty() => {
+                return Err(format!("missing key before next segment, at {i}"));
+            }
+            '.' => {
+                let key = std::mem::take(&mut key_acc);
+                assert!(type_acc.is_empty());
+                out.push(PathPart::Scalar(key));
+            }
+            _ if in_bracket => type_acc.push(c),
+            _ => key_acc.push(c),
+        }
+    }
+    if in_bracket {
+        return Err("unclosed bracket".into());
+    }
+    if !key_acc.is_empty() {
+        out.push(PathPart::Scalar(key_acc));
+    }
+    Ok(out)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RefShape {
+    StrongRef,
+    AtUri,
+    AtUriParts,
+    Did,
+    Handle,
+    AtIdentifier,
+}
+
+impl TryFrom<&str> for RefShape {
+    type Error = String;
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        match s {
+            "strong-ref" => Ok(Self::StrongRef),
+            "at-uri" => Ok(Self::AtUri),
+            "at-uri-parts" => Ok(Self::AtUriParts),
+            "did" => Ok(Self::Did),
+            "handle" => Ok(Self::Handle),
+            "at-identifier" => Ok(Self::AtIdentifier),
+            _ => Err(format!("unknown shape: {s}")),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct FullAtUriParts {
+    pub repo: AtIdentifier,
+    pub collection: Nsid,
+    pub rkey: RecordKey,
+    pub cid: Option<Cid>,
+}
+
+impl FullAtUriParts {
+    pub fn to_uri(&self) -> String {
+        let repo: String = self.repo.clone().into(); // no as_str for AtIdentifier atrium???
+        let collection = self.collection.as_str();
+        let rkey = self.rkey.as_str();
+        format!("at://{repo}/{collection}/{rkey}")
+    }
+}
+
+// TODO: move this to links
+pub fn split_uri(uri: &str) -> Option<(AtIdentifier, Nsid, RecordKey)> {
+    let rest = uri.strip_prefix("at://")?;
+    let (repo, rest) = rest.split_once("/")?;
+    let repo = repo.parse().ok()?;
+    let (collection, rkey) = rest.split_once("/")?;
+    let collection = collection.parse().ok()?;
+    let rkey = rkey.split_once('#').map(|(k, _)| k).unwrap_or(rkey);
+    let rkey = rkey.split_once('?').map(|(k, _)| k).unwrap_or(rkey);
+    let rkey = rkey.parse().ok()?;
+    Some((repo, collection, rkey))
+}
+
+#[derive(Debug, PartialEq)]
+pub enum MatchedRef {
+    AtUri(FullAtUriParts),
+    Identifier(AtIdentifier),
+}
+
+pub fn match_shape(shape: RefShape, val: &Value) -> Option<MatchedRef> {
+    // TODO: actually validate at-uri format
+    // TODO: actually validate everything else also
+    // TODO: should this function normalize identifiers to DIDs probably?
+    // or just return at-uri parts so the caller can resolve and reassemble
+    match shape {
+        RefShape::StrongRef => {
+            let o = val.as_object()?;
+            let uri = o.get("uri")?.as_str()?.to_string();
+            let cid = o.get("cid")?.as_str()?.parse().ok()?;
+            let (repo, collection, rkey) = split_uri(&uri)?;
+            Some(MatchedRef::AtUri(FullAtUriParts {
+                repo,
+                collection,
+                rkey,
+                cid: Some(cid),
+            }))
+        }
+        RefShape::AtUri => {
+            let uri = val.as_str()?.to_string();
+            let (repo, collection, rkey) = split_uri(&uri)?;
+            Some(MatchedRef::AtUri(FullAtUriParts {
+                repo,
+                collection,
+                rkey,
+                cid: None,
+            }))
+        }
+        RefShape::AtUriParts => {
+            let o = val.as_object()?;
+            let repo = o.get("repo").or(o.get("did"))?.as_str()?.parse().ok()?;
+            let collection = o.get("collection")?.as_str()?.parse().ok()?;
+            let rkey = o.get("rkey")?.as_str()?.parse().ok()?;
+            let cid = o
+                .get("cid")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok());
+            Some(MatchedRef::AtUri(FullAtUriParts {
+                repo,
+                collection,
+                rkey,
+                cid,
+            }))
+        }
+        RefShape::Did => {
+            let did = val.as_str()?.parse().ok()?;
+            Some(MatchedRef::Identifier(AtIdentifier::Did(did)))
+        }
+        RefShape::Handle => {
+            let handle = val.as_str()?.parse().ok()?;
+            Some(MatchedRef::Identifier(AtIdentifier::Handle(handle)))
+        }
+        RefShape::AtIdentifier => {
+            let identifier = val.as_str()?.parse().ok()?;
+            Some(MatchedRef::Identifier(identifier))
+        }
+    }
+}
+
+// TODO: send back metadata about the matching
+pub fn extract_links(
+    sources: Vec<HydrationSource>,
+    skeleton: &Value,
+) -> Result<Vec<MatchedRef>, String> {
+    // collect early to catch errors from the client
+    // (TODO maybe the handler should do this and pass in the processed stuff probably definitely yeah)
+    let sources = sources
+        .into_iter()
+        .map(|HydrationSource { path, shape }| {
+            let path_parts = parse_record_path(&path)?;
+            let shape: RefShape = shape.as_str().try_into()?;
+            Ok((path_parts, shape))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    // lazy first impl, just re-walk the skeleton as many times as needed
+    // not deduplicating for now
+    let mut out = Vec::new();
+    for (path_parts, shape) in sources {
+        for val in PathWalker::new(&path_parts, skeleton) {
+            if let Some(matched) = match_shape(shape, val) {
+                out.push(matched);
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+struct PathWalker<'a> {
+    todo: Vec<(&'a [PathPart], &'a Value)>,
+}
+impl<'a> PathWalker<'a> {
+    fn new(path_parts: &'a [PathPart], skeleton: &'a Value) -> Self {
+        Self {
+            todo: vec![(path_parts, skeleton)],
+        }
+    }
+}
+impl<'a> Iterator for PathWalker<'a> {
+    type Item = &'a Value;
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let (parts, val) = self.todo.pop()?;
+            let Some((part, rest)) = parts.split_first() else {
+                return Some(val);
+            };
+            let Some(o) = val.as_object() else {
+                continue;
+            };
+            match part {
+                PathPart::Scalar(k) => {
+                    let Some(v) = o.get(k) else {
+                        continue;
+                    };
+                    self.todo.push((rest, v));
+                }
+                PathPart::Vector(k, t) => {
+                    let Some(a) = o.get(k).and_then(|v| v.as_array()) else {
+                        continue;
+                    };
+                    for v in a.iter().rev().filter(|c| {
+                        let Some(t) = t else { return true };
+                        c.as_object()
+                            .and_then(|o| o.get("$type"))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s == t)
+                            .unwrap_or(false)
+                    }) {
+                        self.todo.push((rest, v))
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    static TEST_CID: &str = "bafyreidffwk5wvh5l76yy7zefiqrovv6yaaegb4wg4zaq35w7nt3quix5a";
+
+    #[test]
+    fn test_parse_record_path() -> Result<(), Box<dyn std::error::Error>> {
+        let cases = [
+            ("", vec![]),
+            ("subject", vec![PathPart::Scalar("subject".into())]),
+            ("authorDid", vec![PathPart::Scalar("authorDid".into())]),
+            (
+                "subject.uri",
+                vec![
+                    PathPart::Scalar("subject".into()),
+                    PathPart::Scalar("uri".into()),
+                ],
+            ),
+            ("members[]", vec![PathPart::Vector("members".into(), None)]),
+            (
+                "add[].key",
+                vec![
+                    PathPart::Vector("add".into(), None),
+                    PathPart::Scalar("key".into()),
+                ],
+            ),
+            ("a[b]", vec![PathPart::Vector("a".into(), Some("b".into()))]),
+            (
+                "a[b.c]",
+                vec![PathPart::Vector("a".into(), Some("b.c".into()))],
+            ),
+            (
+                "facets[app.bsky.richtext.facet].features[app.bsky.richtext.facet#mention].did",
+                vec![
+                    PathPart::Vector("facets".into(), Some("app.bsky.richtext.facet".into())),
+                    PathPart::Vector(
+                        "features".into(),
+                        Some("app.bsky.richtext.facet#mention".into()),
+                    ),
+                    PathPart::Scalar("did".into()),
+                ],
+            ),
+        ];
+
+        for (path, expected) in cases {
+            let parsed = parse_record_path(path)?;
+            assert_eq!(parsed, expected, "path: {path:?}");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_match_shape() {
+        let cases = [
+            ("strong-ref", json!(""), None),
+            ("strong-ref", json!({}), None),
+            ("strong-ref", json!({ "uri": "abc" }), None),
+            ("strong-ref", json!({ "cid": TEST_CID }), None),
+            (
+                "strong-ref",
+                json!({ "uri": "at://a.com/xx.yy.zz/1", "cid": TEST_CID }),
+                Some(MatchedRef::AtUri(FullAtUriParts {
+                    repo: "a.com".parse().unwrap(),
+                    collection: "xx.yy.zz".parse().unwrap(),
+                    rkey: "1".parse().unwrap(),
+                    cid: Some(TEST_CID.parse().unwrap()),
+                })),
+            ),
+            ("at-uri", json!({ "uri": "abc" }), None),
+            (
+                "at-uri",
+                json!({ "uri": "at://did:web:y.com/xx.yy.zz/1", "cid": TEST_CID }),
+                None,
+            ),
+            (
+                "at-uri",
+                json!("at://did:web:y.com/xx.yy.zz/1"),
+                Some(MatchedRef::AtUri(FullAtUriParts {
+                    repo: "did:web:y.com".parse().unwrap(),
+                    collection: "xx.yy.zz".parse().unwrap(),
+                    rkey: "1".parse().unwrap(),
+                    cid: None,
+                })),
+            ),
+            ("at-uri-parts", json!("abc"), None),
+            ("at-uri-parts", json!({}), None),
+            (
+                "at-uri-parts",
+                json!({"repo": "a.com", "collection": "xx.yy.zz", "rkey": "1", "cid": TEST_CID}),
+                Some(MatchedRef::AtUri(FullAtUriParts {
+                    repo: "a.com".parse().unwrap(),
+                    collection: "xx.yy.zz".parse().unwrap(),
+                    rkey: "1".parse().unwrap(),
+                    cid: Some(TEST_CID.parse().unwrap()),
+                })),
+            ),
+            (
+                "at-uri-parts",
+                json!({"did": "a.com", "collection": "xx.yy.zz", "rkey": "1"}),
+                Some(MatchedRef::AtUri(FullAtUriParts {
+                    repo: "a.com".parse().unwrap(),
+                    collection: "xx.yy.zz".parse().unwrap(),
+                    rkey: "1".parse().unwrap(),
+                    cid: None,
+                })),
+            ),
+            (
+                "at-uri-parts",
+                // 'repo' takes precedence over 'did'
+                json!({"did": "did:web:a.com", "repo": "z.com", "collection": "xx.yy.zz", "rkey": "1"}),
+                Some(MatchedRef::AtUri(FullAtUriParts {
+                    repo: "z.com".parse().unwrap(),
+                    collection: "xx.yy.zz".parse().unwrap(),
+                    rkey: "1".parse().unwrap(),
+                    cid: None,
+                })),
+            ),
+            (
+                "at-uri-parts",
+                json!({"repo": "a.com", "collection": "xx.yy.zz", "rkey": "1", "cid": TEST_CID}),
+                Some(MatchedRef::AtUri(FullAtUriParts {
+                    repo: "a.com".parse().unwrap(),
+                    collection: "xx.yy.zz".parse().unwrap(),
+                    rkey: "1".parse().unwrap(),
+                    cid: Some(TEST_CID.parse().unwrap()),
+                })),
+            ),
+            (
+                "at-uri-parts",
+                json!({"repo": "a.com", "collection": "xx.yy.zz", "rkey": "1", "cid": {}}),
+                Some(MatchedRef::AtUri(FullAtUriParts {
+                    repo: "a.com".parse().unwrap(),
+                    collection: "xx.yy.zz".parse().unwrap(),
+                    rkey: "1".parse().unwrap(),
+                    cid: None,
+                })),
+            ),
+            ("did", json!({}), None),
+            ("did", json!(""), None),
+            ("did", json!("bad-example.com"), None),
+            (
+                "did",
+                json!("did:plc:xyz"),
+                Some(MatchedRef::Identifier("did:plc:xyz".parse().unwrap())),
+            ),
+            ("handle", json!({}), None),
+            (
+                "handle",
+                json!("bad-example.com"),
+                Some(MatchedRef::Identifier("bad-example.com".parse().unwrap())),
+            ),
+            ("handle", json!("did:plc:xyz"), None),
+            ("at-identifier", json!({}), None),
+            (
+                "at-identifier",
+                json!("bad-example.com"),
+                Some(MatchedRef::Identifier("bad-example.com".parse().unwrap())),
+            ),
+            (
+                "at-identifier",
+                json!("did:plc:xyz"),
+                Some(MatchedRef::Identifier("did:plc:xyz".parse().unwrap())),
+            ),
+        ];
+        for (i, (shape, val, expected)) in cases.into_iter().enumerate() {
+            let s = shape.try_into().unwrap();
+            let matched = match_shape(s, &val);
+            assert_eq!(matched, expected, "{i}: shape: {shape:?}, val: {val:?}");
+        }
+    }
+}

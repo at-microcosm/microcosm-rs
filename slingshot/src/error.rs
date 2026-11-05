@@ -39,9 +39,6 @@ pub enum IdentityError {
     #[error("found handle {0:?} but it appears invalid: {1}")]
     InvalidHandle(String, &'static str),
 
-    #[error("could not convert atrium did doc to partial mini doc: {0}")]
-    BadDidDoc(String),
-
     #[error("wrong key for clearing refresh queue: {0}")]
     RefreshQueueKeyError(&'static str),
 }
@@ -64,6 +61,8 @@ pub enum MainTaskError {
     HealthCheckError(#[from] HealthCheckError),
     #[error("firehose cache failed to close: {0}")]
     FirehoseCacheCloseError(foyer::Error),
+    #[error("identity cache failed to close: {0}")]
+    IdentityCacheCloseError(foyer::Error),
 }
 
 #[derive(Debug, Error)]
@@ -90,4 +89,22 @@ pub enum RecordError {
     UpstreamBadRequest(ErrorResponseObject),
     #[error("upstream non-atproto bad request")]
     UpstreamBadBadNotGoodRequest(reqwest::Error),
+}
+
+#[derive(Debug, Error)]
+pub enum ProxyError {
+    #[error("failed to parse path: {0}")]
+    PathParseError(String),
+    #[error(transparent)]
+    UrlParseError(#[from] url::ParseError),
+    #[error(transparent)]
+    ReqwestError(#[from] reqwest::Error),
+    #[error(transparent)]
+    InvalidHeader(#[from] reqwest::header::InvalidHeaderValue),
+    #[error(transparent)]
+    IdentityError(#[from] IdentityError),
+    #[error("upstream service could not be resolved")]
+    ServiceNotFound,
+    #[error("upstream service was found but no services matched")]
+    ServiceNotMatched,
 }

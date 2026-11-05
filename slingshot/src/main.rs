@@ -1,8 +1,6 @@
-// use foyer::HybridCache;
-// use foyer::{Engine, DirectFsDeviceOptions, HybridCacheBuilder};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use slingshot::{
-    Identity, Repo, consume, error::MainTaskError, firehose_cache, healthcheck, serve,
+    Identity, Proxy, Repo, consume, error::MainTaskError, firehose_cache, healthcheck, serve,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -10,6 +8,7 @@ use std::path::PathBuf;
 use atrium_identity::did::DEFAULT_PLC_DIRECTORY_URL;
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
+use url::Url;
 
 /// Slingshot record edge cache
 #[derive(Parser, Debug, Clone)]
@@ -38,7 +37,7 @@ struct Args {
     #[clap(default_value_t = 64)]
     record_cache_memory_mb: usize,
     /// disk cache size in gigabytes for records
-    #[arg(long, env = "SLINGSHOT_RECORD_CACHE_DISK_DB")]
+    #[arg(long, env = "SLINGSHOT_RECORD_CACHE_DISK_GB")]
     #[clap(default_value_t = 1)]
     record_cache_disk_gb: usize,
     /// memory cache size in megabytes for identities
@@ -46,9 +45,14 @@ struct Args {
     #[clap(default_value_t = 64)]
     identity_cache_memory_mb: usize,
     /// disk cache size in gigabytes for identities
-    #[arg(long, env = "SLINGSHOT_IDENTITY_CACHE_DISK_DB")]
+    #[arg(long, env = "SLINGSHOT_IDENTITY_CACHE_DISK_GB")]
     #[clap(default_value_t = 1)]
     identity_cache_disk_gb: usize,
+    /// the address of this server
+    ///
+    /// used if --acme-domain is not set, defaulting to `--bind`
+    #[arg(long, conflicts_with("tls_domain"), env = "SLINGSHOT_PUBLIC_HOST")]
+    base_url: Option<Url>,
     /// the plc directory used to resolve did:plc identities
     #[arg(long, env = "SLINGSHOT_PLC_DIRECTORY")]
     #[clap(default_value = DEFAULT_PLC_DIRECTORY_URL)]
@@ -57,32 +61,57 @@ struct Args {
     ///
     /// if present:
     /// - a did:web document will be served at /.well-known/did.json
-    /// - an HTTPS certs will be automatically configured with Acme/letsencrypt
+    /// - the server will bind on port 443
+    /// - if `--acme-contact` is present, the server will bind port 80 for http
+    ///   challenges and attempt to auto-provision certs for `--tls-domain`
+    /// - if `--acme-contact is absent, the server will load certs from the
+    ///   `--tls-certs` folder, and try to reload them twice daily, guarded by
+    ///   a lock file called `.cert-lock` in the `--tls-certs` folder.
     /// - TODO: a rate-limiter will be installed
     #[arg(
         long,
         conflicts_with("bind"),
-        requires("acme_cache_path"),
-        env = "SLINGSHOT_ACME_DOMAIN"
+        requires("tls_certs"),
+        env = "SLINGSHOT_TLS_DOMAIN"
     )]
-    acme_domain: Option<String>,
+    tls_domain: Option<String>,
+    /// a location to find/cache acme or other tls certs
+    ///
+    /// recommended in production, mind the file permissions.
+    #[arg(long, env = "SLINGSHOT_TLS_CERTS_PATH")]
+    tls_certs: Option<PathBuf>,
+    /// listen for ipv6 when using acme or other tls
+    ///
+    /// you must also configure the relevant DNS records for this to work
+    #[arg(long, action, requires("tls_domain"), env = "SLINGSHOT_TLS_IPV6")]
+    tls_ipv6: bool,
+    /// with tls configured on 443, say "please use https" on port 80
+    ///
+    /// note: configuring tls always binds port 80 as well, 443-only is TODO
+    #[arg(long, action, requires("tls_domain"), env = "SLINGSHOT_WARN_INSECURE")]
+    warn_insecure: bool,
+    /// redirect acme http-01 challenges to this url
+    ///
+    /// useful if you're setting up a second instance that synchronizes its
+    /// certs from a main instance doing acme.
+    #[arg(
+        long,
+        conflicts_with("acme_contact"),
+        requires("tls_domain"),
+        env = "SLINGSHOT_ACME_CHALLENGE_REDIRECT"
+    )]
+    acme_challenge_redirect: Option<String>,
     /// email address for letsencrypt contact
     ///
     /// recommended in production, i guess?
-    #[arg(long, requires("acme_domain"), env = "SLINGSHOT_ACME_CONTACT")]
+    #[arg(long, requires("tls_domain"), env = "SLINGSHOT_ACME_CONTACT")]
     acme_contact: Option<String>,
-    /// a location to cache acme https certs
+    /// use the staging environment for letsencrypt
     ///
-    /// required when (and only used when) --acme-domain is specified.
-    ///
-    /// recommended in production, but mind the file permissions.
-    #[arg(long, requires("acme_domain"), env = "SLINGSHOT_ACME_CACHE_PATH")]
-    acme_cache_path: Option<PathBuf>,
-    /// listen for ipv6 when using acme
-    ///
-    /// you must also configure the relevant DNS records for this to work
-    #[arg(long, action, requires("acme_domain"), env = "SLINGSHOT_ACME_IPV6")]
-    acme_ipv6: bool,
+    /// recommended to initially test out new deployments with this to avoid
+    /// letsencrypt rate limit problems.
+    #[arg(long, action, requires("acme_contact"), env = "SLINGSHOT_ACME_STAGING")]
+    acme_staging: bool,
     /// an web address to send healtcheck pings to every ~51s or so
     #[arg(long, env = "SLINGSHOT_HEALTHCHECK")]
     healthcheck: Option<String>,
@@ -105,6 +134,15 @@ async fn main() -> Result<(), String> {
     ctrlc::set_handler(move || ctrlc_shutdown.cancel()).expect("failed to set ctrl-c handler");
 
     let args = Args::parse();
+
+    let base_url: Url = args
+        .base_url
+        .or_else(|| {
+            args.tls_domain
+                .as_ref()
+                .map(|d| Url::parse(&format!("https://{d}")).unwrap())
+        })
+        .unwrap_or_else(|| Url::parse(&format!("http://{}", args.bind)).unwrap());
 
     if args.collect_metrics {
         log::trace!("installing metrics server...");
@@ -149,16 +187,16 @@ async fn main() -> Result<(), String> {
     )
     .await
     .map_err(|e| format!("identity setup failed: {e:?}"))?;
-
-    log::info!("identity service ready.");
     let identity_refresher = identity.clone();
     let identity_shutdown = shutdown.clone();
     tasks.spawn(async move {
         identity_refresher.run_refresher(identity_shutdown).await?;
         Ok(())
     });
+    log::info!("identity service ready.");
 
     let repo = Repo::new(identity.clone());
+    let proxy = Proxy::new(identity.clone());
 
     let identity_for_server = identity.clone();
     let server_shutdown = shutdown.clone();
@@ -169,10 +207,15 @@ async fn main() -> Result<(), String> {
             server_cache_handle,
             identity_for_server,
             repo,
-            args.acme_domain,
+            proxy,
+            base_url,
+            args.tls_domain,
+            args.tls_certs,
+            args.tls_ipv6,
+            args.warn_insecure,
+            args.acme_challenge_redirect,
             args.acme_contact,
-            args.acme_cache_path,
-            args.acme_ipv6,
+            args.acme_staging,
             server_shutdown,
             bind,
         )
@@ -219,6 +262,13 @@ async fn main() -> Result<(), String> {
             .map_err(MainTaskError::FirehoseCacheCloseError)
     });
 
+    tasks.spawn(async move {
+        identity
+            .close()
+            .await
+            .map_err(MainTaskError::IdentityCacheCloseError)
+    });
+
     tokio::select! {
         _ = async {
             while let Some(completed) = tasks.join_next().await {
@@ -241,9 +291,16 @@ fn install_metrics_server(
 ) -> Result<(), metrics_exporter_prometheus::BuildError> {
     log::info!("installing metrics server...");
     PrometheusBuilder::new()
-        .set_quantiles(&[0.5, 0.9, 0.99, 1.0])?
-        .set_bucket_duration(std::time::Duration::from_secs(300))?
-        .set_bucket_count(std::num::NonZero::new(12).unwrap()) // count * duration = 60 mins. stuff doesn't happen that fast here.
+        .set_buckets(&[
+            0.025, 0.045, 0.080, 0.144, 0.259, 0.465, 0.833, 1.495, 2.682, 4.812, 8.633, 15.488,
+            27.785,
+        ])?
+        .set_bucket_duration(std::time::Duration::from_secs(15))?
+        .set_bucket_count(std::num::NonZero::new(4).unwrap()) // count * duration = bucket lifetime
+        .idle_timeout(
+            metrics_util::MetricKindMask::ALL,
+            Some(std::time::Duration::from_secs(300)),
+        )
         .set_enable_unit_suffix(false) // this seemed buggy for constellation (sometimes wouldn't engage)
         .with_http_listener(bind_metrics)
         .install()?;

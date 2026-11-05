@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+async-stream = "0.3.6"
 atrium-api = { version = "0.26.0", default-features = false }
 atrium-common = "0.1.4"
 atrium-identity = "0.2.0"
-atrium-oauth = "0.2.0"
 clap = { workspace = true }
 ctrlc = "3.4.7"
 foyer = { version = "0.22.3", features = ["serde"] }
@@ -16,10 +16,11 @@ jetstream = { path = "../jetstream", features = ["metrics"] }
 microcosm-links = { path = "../links" }
 log = "0.4.27"
 metrics = "0.24.2"
+metrics-util = "0.20.1"
 metrics-exporter-prometheus = { version = "0.17.1", features = ["http-listener"] }
-poem = { version = "3.1.12", features = ["acme", "static-files"] }
-poem-openapi = { version = "5.1.16", features = ["scalar"] }
-reqwest = { version = "0.12.22", features = ["json"] }
+poem = { git = "https://github.com/uniphil/poem.git", branch = "acme/issue-async", features = ["acme", "static-files"] }
+poem-openapi = { git = "https://github.com/uniphil/poem.git", branch = "acme/issue-async", features = ["scalar"] }
+reqwest = { version = "0.12.22", features = ["json", "gzip"] }
 rustls = "0.23.31"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.141", features = ["raw_value"] }
@@ -28,4 +29,4 @@ time = { version = "0.3.47", features = ["serde"] }
 tokio = { version = "1.47.0", features = ["full"] }
 tokio-util = "0.7.15"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
-url = "2.5.4"
+url = { version = "2.5.4", features = ["serde"] }

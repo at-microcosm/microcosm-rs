@@ -1,30 +1,30 @@
 use crate::{
-    CachedRecord, ErrorResponseObject, Identity, Repo,
+    CachedRecord, ErrorResponseObject, Identity, Proxy, Repo,
     error::{RecordError, ServerError},
+    proxy::{FullAtUriParts, MatchedRef, extract_links, split_uri},
+    record::RawRecord,
 };
-use atrium_api::types::string::{Cid, Did, Handle, Nsid, RecordKey};
+use atrium_api::types::string::{AtIdentifier, Cid, Did, Handle, Nsid, RecordKey};
 use foyer::HybridCache;
 use microcosm_links::at_uri::parse_at_uri as normalize_at_uri;
 use serde::Serialize;
-use std::path::PathBuf;
-use std::str::FromStr;
-use std::sync::Arc;
-use std::time::Instant;
+use std::{collections::HashMap, path::PathBuf, str::FromStr, sync::Arc, time::Instant};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use poem::{
-    Endpoint, EndpointExt, IntoResponse, Route, Server,
+    Endpoint, EndpointExt, IntoResponse, Route, RouteScheme, Server,
     endpoint::{StaticFileEndpoint, make_sync},
-    http::Method,
+    http::{Method, StatusCode},
     listener::{
         Listener, TcpListener,
-        acme::{AutoCert, LETS_ENCRYPT_PRODUCTION},
+        acme::{AutoCert, ChallengeType, LETS_ENCRYPT_PRODUCTION, LETS_ENCRYPT_STAGING},
     },
     middleware::{CatchPanic, Cors, Tracing},
 };
 use poem_openapi::{
     ApiResponse, ContactObject, ExternalDocumentObject, Object, OpenApi, OpenApiService, Tags,
-    param::Query, payload::Json, types::Example,
+    Union, param::Query, payload::Json, types::Example,
 };
 
 fn example_handle() -> String {
@@ -33,11 +33,17 @@ fn example_handle() -> String {
 fn example_did() -> String {
     "did:plc:hdhoaan3xa3jiuq4fg4mefid".to_string()
 }
+fn example_service_did() -> String {
+    "did:web:constellation.microcosm.blue".to_string()
+}
 fn example_collection() -> String {
     "app.bsky.feed.like".to_string()
 }
 fn example_rkey() -> String {
     "3lv4ouczo2b2a".to_string()
+}
+fn example_id_fragment() -> String {
+    "#constellation".to_string()
 }
 fn example_uri() -> String {
     format!(
@@ -54,7 +60,7 @@ fn example_signing_key() -> String {
     "zQ3shpq1g134o7HGDb86CtQFxnHqzx5pZWknrVX2Waum3fF6j".to_string()
 }
 
-#[derive(Object)]
+#[derive(Debug, Object)]
 #[oai(example = true)]
 struct XrpcErrorResponseObject {
     /// Should correspond an error `name` in the lexicon errors array
@@ -85,8 +91,22 @@ fn bad_request_handler_get_record(err: poem::Error) -> GetRecordResponse {
     }))
 }
 
-fn bad_request_handler_resolve_mini(err: poem::Error) -> ResolveMiniIDResponse {
-    ResolveMiniIDResponse::BadRequest(Json(XrpcErrorResponseObject {
+fn bad_request_handler_resolve_mini(err: poem::Error) -> ResolveMiniDocResponse {
+    ResolveMiniDocResponse::BadRequest(Json(XrpcErrorResponseObject {
+        error: "InvalidRequest".to_string(),
+        message: format!("Bad request, here's some info that maybe should not be exposed: {err}"),
+    }))
+}
+
+fn bad_request_handler_resolve_service(err: poem::Error) -> ResolveServiceResponse {
+    ResolveServiceResponse::BadRequest(Json(XrpcErrorResponseObject {
+        error: "InvalidRequest".to_string(),
+        message: format!("Bad request, here's some info that maybe should not be exposed: {err}"),
+    }))
+}
+
+fn bad_request_handler_proxy_query(err: poem::Error) -> ProxyHydrateResponse {
+    ProxyHydrateResponse::BadRequest(Json(XrpcErrorResponseObject {
         error: "InvalidRequest".to_string(),
         message: format!("Bad request, here's some info that maybe should not be exposed: {err}"),
     }))
@@ -181,13 +201,173 @@ impl Example for MiniDocResponseObject {
 
 #[derive(ApiResponse)]
 #[oai(bad_request_handler = "bad_request_handler_resolve_mini")]
-enum ResolveMiniIDResponse {
+enum ResolveMiniDocResponse {
     /// Identity resolved
     #[oai(status = 200)]
     Ok(Json<MiniDocResponseObject>),
     /// Bad request or identity not resolved
     #[oai(status = 400)]
     BadRequest(XrpcError),
+}
+
+#[derive(Object)]
+#[oai(example = true)]
+struct ServiceResponseObject {
+    /// The service endpoint URL, if found
+    endpoint: String,
+}
+impl Example for ServiceResponseObject {
+    fn example() -> Self {
+        Self {
+            endpoint: "https://example.com".to_string(),
+        }
+    }
+}
+
+#[derive(ApiResponse)]
+#[oai(bad_request_handler = "bad_request_handler_resolve_service")]
+enum ResolveServiceResponse {
+    /// Service resolved
+    #[oai(status = 200)]
+    Ok(Json<ServiceResponseObject>),
+    /// Bad request or service not resolved
+    #[oai(status = 400)]
+    BadRequest(XrpcError),
+}
+
+#[derive(Object)]
+#[oai(rename_all = "camelCase")]
+struct ProxyHydrationError {
+    /// Short description of why the hydration failed
+    reason: String,
+    /// Whether or not it's recommended to retry requesting this item
+    should_retry: bool,
+    /// URL to follow up at if retrying
+    follow_up: String,
+}
+
+#[derive(Object)]
+#[oai(rename_all = "camelCase")]
+struct ProxyHydrationPending {
+    /// URL you can request to finish hydrating this item
+    follow_up: String,
+    /// Why this item couldn't be hydrated: 'deadline' or 'limit'
+    ///
+    /// - `deadline`: the item fetch didn't complete before the response was
+    ///   due, but will continue on slingshot in the background -- `followUp`
+    ///   requests are coalesced into the original item fetch to be available as
+    ///   early as possible.
+    ///
+    /// - `limit`: slingshot only attempts to hydrate the first 100 items found
+    ///   in a proxied response, with the remaining marked `pending`. You can
+    ///   request `followUp` to fetch them.
+    ///
+    /// In the future, Slingshot may put pending links after `limit` into a low-
+    /// priority fetch queue, so that these items become available sooner on
+    /// follow-up request as well.
+    reason: String,
+}
+
+// todo: there's gotta be a supertrait that collects these?
+use poem_openapi::types::{IsObjectType, ParseFromJSON, ToJSON, Type};
+
+#[derive(Union)]
+#[oai(discriminator_name = "status", rename_all = "camelCase")]
+enum Hydration<T: Send + Sync + Type + ToJSON + ParseFromJSON + IsObjectType> {
+    Error(ProxyHydrationError),
+    Pending(ProxyHydrationPending),
+    Found(T),
+}
+
+#[derive(Object)]
+#[oai(example = true)]
+struct ProxyHydrateResponseObject {
+    /// The original upstream response content
+    output: serde_json::Value,
+    /// Any hydrated records
+    records: HashMap<String, Hydration<FoundRecordResponseObject>>,
+    /// Any hydrated identifiers
+    identifiers: HashMap<String, Hydration<MiniDocResponseObject>>,
+}
+impl Example for ProxyHydrateResponseObject {
+    fn example() -> Self {
+        Self {
+            output: serde_json::json!({}),
+            records: HashMap::from([(
+                "asdf".into(),
+                Hydration::Pending(ProxyHydrationPending {
+                    follow_up: "/xrpc/com.atproto.repo.getRecord?...".to_string(),
+                    reason: "deadline".to_string(),
+                }),
+            )]),
+            identifiers: HashMap::new(),
+        }
+    }
+}
+
+#[derive(ApiResponse)]
+#[oai(bad_request_handler = "bad_request_handler_proxy_query")]
+enum ProxyHydrateResponse {
+    #[oai(status = 200)]
+    Ok(Json<ProxyHydrateResponseObject>),
+    #[oai(status = 400)]
+    BadRequest(XrpcError),
+}
+
+#[derive(Object)]
+pub struct HydrationSource {
+    /// Record Path syntax for locating fields
+    pub path: String,
+    /// What to expect at the path: 'strong-ref', 'at-uri', 'at-uri-parts', 'did', 'handle', or 'at-identifier'.
+    ///
+    /// - `strong-ref`: object in the shape of `com.atproto.repo.strongRef` with `uri` and `cid` keys.
+    /// - `at-uri`: string, must have all segments present (identifier, collection, rkey)
+    /// - `at-uri-parts`: object with keys (`repo` or `did`), `collection`, `rkey`, and optional `cid`. Other keys may be present and will be ignored.
+    /// - `did`: string, `did` format
+    /// - `handle`: string, `handle` format
+    /// - `at-identifier`: string, `did` or `handle` format
+    pub shape: String,
+}
+
+#[derive(Object)]
+#[oai(example = true)]
+struct ProxyQueryPayload {
+    /// The NSID of the XRPC you wish to forward
+    xrpc: String,
+    /// The destination service the request will be forwarded to
+    atproto_proxy: String,
+    /// An optional auth token to pass on
+    ///
+    /// the `aud` field must match the upstream atproto_proxy service
+    authorization: Option<String>,
+    /// An optional set of labelers to request be applied by the upstream
+    atproto_accept_labelers: Option<String>,
+    /// The `params` for the destination service XRPC endpoint
+    ///
+    /// Currently this will be passed along unchecked, but a future version of
+    /// slingshot may attempt to do lexicon resolution to validate `params`
+    /// based on the upstream service
+    params: Option<serde_json::Value>,
+    /// Paths within the response to look for at-uris that can be hydrated
+    hydration_sources: Vec<HydrationSource>,
+    // todo: let clients pass a hydration deadline?
+}
+impl Example for ProxyQueryPayload {
+    fn example() -> Self {
+        Self {
+            xrpc: "app.bsky.feed.getFeedSkeleton".to_string(),
+            atproto_proxy: "did:web:blue.mackuba.eu#bsky_fg".to_string(),
+            authorization: None,
+            atproto_accept_labelers: None,
+            params: Some(serde_json::json!({
+                "feed": "at://did:plc:oio4hkxaop4ao4wz2pp3f4cr/app.bsky.feed.generator/atproto",
+            })),
+            hydration_sources: vec![HydrationSource {
+                path: "feed[].post".to_string(),
+                shape: "at-uri".to_string(),
+            }],
+        }
+    }
 }
 
 #[derive(Object)]
@@ -219,8 +399,10 @@ enum JustDidResponse {
 }
 
 struct Xrpc {
+    base_url: url::Url,
     cache: HybridCache<String, CachedRecord>,
     identity: Identity,
+    proxy: Arc<Proxy>,
     repo: Arc<Repo>,
 }
 
@@ -286,7 +468,8 @@ impl Xrpc {
         /// only retains the most recent version of a record.
         Query(cid): Query<Option<String>>,
     ) -> GetRecordResponse {
-        self.get_record_impl(repo, collection, rkey, cid).await
+        self.get_record_impl(&repo, &collection, &rkey, cid.as_deref())
+            .await
     }
 
     /// blue.microcosm.repo.getRecordByUri
@@ -356,27 +539,15 @@ impl Xrpc {
             return bad_at_uri();
         };
 
-        // TODO: move this to links
-        let Some(rest) = normalized.strip_prefix("at://") else {
+        let Some((repo, collection, rkey)) = split_uri(&normalized) else {
             return bad_at_uri();
-        };
-        let Some((repo, rest)) = rest.split_once('/') else {
-            return bad_at_uri();
-        };
-        let Some((collection, rest)) = rest.split_once('/') else {
-            return bad_at_uri();
-        };
-        let rkey = if let Some((rkey, _rest)) = rest.split_once('?') {
-            rkey
-        } else {
-            rest
         };
 
         self.get_record_impl(
-            repo.to_string(),
-            collection.to_string(),
-            rkey.to_string(),
-            cid,
+            Into::<String>::into(repo).as_str(),
+            collection.as_str(),
+            rkey.as_str(),
+            cid.as_deref(),
         )
         .await
     }
@@ -456,7 +627,7 @@ impl Xrpc {
         /// Handle or DID to resolve
         #[oai(example = "example_handle")]
         Query(identifier): Query<String>,
-    ) -> ResolveMiniIDResponse {
+    ) -> ResolveMiniDocResponse {
         self.resolve_mini_id(Query(identifier)).await
     }
 
@@ -474,20 +645,24 @@ impl Xrpc {
         /// Handle or DID to resolve
         #[oai(example = "example_handle")]
         Query(identifier): Query<String>,
-    ) -> ResolveMiniIDResponse {
+    ) -> ResolveMiniDocResponse {
+        Self::resolve_mini_doc_impl(&identifier, self.identity.clone()).await
+    }
+
+    async fn resolve_mini_doc_impl(identifier: &str, identity: Identity) -> ResolveMiniDocResponse {
         let invalid = |reason: &'static str| {
-            ResolveMiniIDResponse::BadRequest(xrpc_error("InvalidRequest", reason))
+            ResolveMiniDocResponse::BadRequest(xrpc_error("InvalidRequest", reason))
         };
 
         let mut unverified_handle = None;
-        let did = match Did::new(identifier.clone()) {
+        let did = match Did::new(identifier.to_string()) {
             Ok(did) => did,
             Err(_) => {
                 let Ok(alleged_handle) = Handle::new(identifier.to_lowercase()) else {
                     return invalid("Identifier was not a valid DID or handle");
                 };
 
-                match self.identity.handle_to_did(alleged_handle.clone()).await {
+                match identity.handle_to_did(alleged_handle.clone()).await {
                     Ok(res) => {
                         if let Some(did) = res {
                             // we did it joe
@@ -505,7 +680,7 @@ impl Xrpc {
                 }
             }
         };
-        let Ok(partial_doc) = self.identity.did_to_partial_mini_doc(&did).await else {
+        let Ok(partial_doc) = identity.did_to_partial_mini_doc(&did).await else {
             return invalid("Failed to get DID doc");
         };
         let Some(partial_doc) = partial_doc else {
@@ -525,8 +700,7 @@ impl Xrpc {
                 "handle.invalid".to_string()
             }
         } else {
-            let Ok(handle_did) = self
-                .identity
+            let Ok(handle_did) = identity
                 .handle_to_did(partial_doc.unverified_handle.clone())
                 .await
             else {
@@ -542,7 +716,7 @@ impl Xrpc {
             }
         };
 
-        ResolveMiniIDResponse::Ok(Json(MiniDocResponseObject {
+        ResolveMiniDocResponse::Ok(Json(MiniDocResponseObject {
             did: did.to_string(),
             handle,
             pds: partial_doc.pds,
@@ -550,14 +724,401 @@ impl Xrpc {
         }))
     }
 
+    /// com.bad-example.identity.resolveService
+    ///
+    /// resolve an atproto service did + id to its http endpoint
+    ///
+    /// > [!important]
+    /// > this endpoint is experimental and may change
+    #[oai(
+        path = "/com.bad-example.identity.resolveService",
+        method = "get",
+        tag = "ApiTags::Custom"
+    )]
+    async fn resolve_service(
+        &self,
+        /// the service's did
+        #[oai(example = "example_service_did")]
+        Query(did): Query<String>,
+        /// id fragment, starting with '#'
+        ///
+        /// must be url-encoded!
+        #[oai(example = "example_id_fragment")]
+        Query(id): Query<String>,
+        /// optionally, the exact service type to filter
+        ///
+        /// resolving a pds requires matching the type as well as id. service
+        /// proxying ignores the type.
+        Query(r#type): Query<Option<String>>,
+    ) -> ResolveServiceResponse {
+        let Ok(did) = Did::new(did) else {
+            return ResolveServiceResponse::BadRequest(xrpc_error(
+                "InvalidRequest",
+                "could not parse 'did' into a DID",
+            ));
+        };
+        let identity = self.identity.clone();
+        Self::resolve_service_impl(&did, &id, r#type.as_deref(), identity).await
+    }
+
+    async fn resolve_service_impl(
+        did: &Did,
+        id_fragment: &str,
+        service_type: Option<&str>,
+        identity: Identity,
+    ) -> ResolveServiceResponse {
+        let invalid = |reason: &'static str| {
+            ResolveServiceResponse::BadRequest(xrpc_error("InvalidRequest", reason))
+        };
+        let Ok(service_mini_doc) = identity.did_to_mini_service_doc(did).await else {
+            return invalid("Failed to get DID doc");
+        };
+        let Some(service_mini_doc) = service_mini_doc else {
+            return invalid("Failed to find DID doc");
+        };
+
+        let Some(matching) = service_mini_doc.get(id_fragment, service_type) else {
+            return invalid("failed to match identity (and maybe type)");
+        };
+
+        ResolveServiceResponse::Ok(Json(ServiceResponseObject {
+            endpoint: matching.endpoint.clone(),
+        }))
+    }
+
+    /// com.bad-example.proxy.hydrateQueryResponse
+    ///
+    /// > [!important]
+    /// > Unstable! This endpoint is experimental and may change.
+    ///
+    /// Fetch + include records referenced from an upstream xrpc query response
+    #[oai(
+        path = "/com.bad-example.proxy.hydrateQueryResponse",
+        method = "post",
+        tag = "ApiTags::Custom"
+    )]
+    async fn proxy_hydrate_query(
+        &self,
+        Json(payload): Json<ProxyQueryPayload>,
+    ) -> ProxyHydrateResponse {
+        let params = if let Some(p) = payload.params {
+            let serde_json::Value::Object(map) = p else {
+                panic!("params have to be an object");
+            };
+            Some(map)
+        } else {
+            None
+        };
+
+        let Some((service_did, id_fragment)) = payload.atproto_proxy.rsplit_once("#") else {
+            return ProxyHydrateResponse::BadRequest(xrpc_error(
+                "BadParameter",
+                "atproto_proxy could not be understood",
+            ));
+        };
+
+        let Ok(service_did) = service_did.parse() else {
+            return ProxyHydrateResponse::BadRequest(xrpc_error(
+                "BadParameter",
+                "atproto_proxy service did could not be parsed",
+            ));
+        };
+
+        let Ok(xrpc) = payload.xrpc.parse() else {
+            return ProxyHydrateResponse::BadRequest(xrpc_error(
+                "BadParameter",
+                "invalid NSID for xrpc param",
+            ));
+        };
+
+        match self
+            .proxy
+            .proxy(
+                &service_did,
+                &format!("#{id_fragment}"),
+                &xrpc,
+                payload.authorization.as_deref(),
+                payload.atproto_accept_labelers.as_deref(),
+                params,
+            )
+            .await
+        {
+            Ok(skeleton) => {
+                let links = match extract_links(payload.hydration_sources, &skeleton) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        log::warn!("problem extracting: {e:?}");
+                        return ProxyHydrateResponse::BadRequest(xrpc_error(
+                            "oop",
+                            "sorry, error extracting",
+                        ));
+                    }
+                };
+                let mut records = HashMap::new();
+                let mut identifiers = HashMap::new();
+
+                enum GetThing {
+                    Record(String, Hydration<FoundRecordResponseObject>),
+                    Identifier(String, Hydration<MiniDocResponseObject>),
+                }
+
+                let (tx, mut rx) = mpsc::channel(1);
+
+                let t0 = Instant::now();
+
+                for (i, link) in links.into_iter().enumerate() {
+                    match link {
+                        MatchedRef::AtUri(parts) => {
+                            let non_canonical_url = parts.to_uri();
+                            if records.contains_key(&non_canonical_url) {
+                                log::warn!("skipping duplicate record without checking cid");
+                                continue;
+                            }
+                            let mut follow_up = self.base_url.clone();
+                            follow_up.set_path("/xrpc/com.atproto.repo.getRecord");
+                            follow_up
+                                .query_pairs_mut()
+                                .append_pair("repo", &Into::<String>::into(parts.repo.clone()))
+                                .append_pair("collection", parts.collection.as_str())
+                                .append_pair("rkey", parts.rkey.as_str());
+                            if let Some(ref cid) = parts.cid {
+                                follow_up
+                                    .query_pairs_mut()
+                                    .append_pair("cid", &cid.as_ref().to_string());
+                            }
+
+                            if i >= 100 {
+                                records.insert(
+                                    non_canonical_url.clone(),
+                                    Hydration::Pending(ProxyHydrationPending {
+                                        reason: "limit".to_string(),
+                                        follow_up: follow_up.to_string(),
+                                    }),
+                                );
+                                continue;
+                            } else {
+                                records.insert(
+                                    non_canonical_url.clone(),
+                                    Hydration::Pending(ProxyHydrationPending {
+                                        reason: "deadline".to_string(),
+                                        follow_up: follow_up.to_string(),
+                                    }),
+                                );
+                            }
+
+                            let tx = tx.clone();
+                            let identity = self.identity.clone();
+                            let repo = self.repo.clone();
+                            tokio::task::spawn(async move {
+                                let FullAtUriParts {
+                                    repo: ident,
+                                    collection,
+                                    rkey,
+                                    cid,
+                                } = parts;
+                                let did = match ident {
+                                    AtIdentifier::Did(did) => did,
+                                    AtIdentifier::Handle(handle) => {
+                                        let Ok(Some(did)) = identity.handle_to_did(handle).await
+                                        else {
+                                            let res = Hydration::Error(ProxyHydrationError {
+                                                reason: "could not resolve handle".to_string(),
+                                                should_retry: true,
+                                                follow_up: follow_up.to_string(),
+                                            });
+                                            return if tx
+                                                .send(GetThing::Record(non_canonical_url, res))
+                                                .await
+                                                .is_ok()
+                                            {
+                                                metrics::counter!("slingshot_hydrated_one", "type" => "record", "ontime" => "true").increment(1);
+                                            } else {
+                                                metrics::counter!("slingshot_hydrated_one", "type" => "record", "ontime" => "false").increment(1);
+                                            };
+                                        };
+                                        did
+                                    }
+                                };
+
+                                let res =
+                                    match repo.get_record(&did, &collection, &rkey, &cid).await {
+                                        Ok(CachedRecord::Deleted) => {
+                                            Hydration::Error(ProxyHydrationError {
+                                                reason: "record deleted".to_string(),
+                                                should_retry: false,
+                                                follow_up: follow_up.to_string(),
+                                            })
+                                        }
+                                        Ok(CachedRecord::Found(RawRecord {
+                                            cid: found_cid,
+                                            record,
+                                        })) => {
+                                            if cid
+                                                .as_ref()
+                                                .map(|expected| *expected != found_cid)
+                                                .unwrap_or(false)
+                                            {
+                                                Hydration::Error(ProxyHydrationError {
+                                                    reason: "not found".to_string(),
+                                                    should_retry: false,
+                                                    follow_up: follow_up.to_string(),
+                                                })
+                                            } else if let Ok(value) = serde_json::from_str(&record)
+                                            {
+                                                let canonical_uri = FullAtUriParts {
+                                                    repo: AtIdentifier::Did(did),
+                                                    collection,
+                                                    rkey,
+                                                    cid: None, // not used for .to_uri
+                                                }
+                                                .to_uri();
+                                                Hydration::Found(FoundRecordResponseObject {
+                                                    cid: Some(found_cid.as_ref().to_string()),
+                                                    uri: canonical_uri,
+                                                    value,
+                                                })
+                                            } else {
+                                                Hydration::Error(ProxyHydrationError {
+                                                    reason: "could not parse upstream response"
+                                                        .to_string(),
+                                                    should_retry: false,
+                                                    follow_up: follow_up.to_string(),
+                                                })
+                                            }
+                                        }
+                                        Err(e) => {
+                                            log::warn!("finally oop {e:?}");
+                                            Hydration::Error(ProxyHydrationError {
+                                                reason: "failed to fetch record".to_string(),
+                                                should_retry: true, // TODO
+                                                follow_up: follow_up.to_string(),
+                                            })
+                                        }
+                                    };
+                                if tx
+                                    .send(GetThing::Record(non_canonical_url, res))
+                                    .await
+                                    .is_ok()
+                                {
+                                    metrics::counter!("slingshot_hydrated_one", "type" => "record", "ontime" => "true").increment(1);
+                                } else {
+                                    metrics::counter!("slingshot_hydrated_one", "type" => "record", "ontime" => "false").increment(1);
+                                }
+                            });
+                        }
+                        MatchedRef::Identifier(id) => {
+                            let identifier: String = id.clone().into();
+                            if identifiers.contains_key(&identifier) {
+                                continue;
+                            }
+
+                            let mut follow_up = self.base_url.clone();
+                            follow_up.set_path("/xrpc/blue.microcosm.identity.resolveMiniDoc");
+
+                            follow_up
+                                .query_pairs_mut()
+                                .append_pair("identifier", &identifier);
+
+                            if i >= 100 {
+                                identifiers.insert(
+                                    identifier.clone(),
+                                    Hydration::Pending(ProxyHydrationPending {
+                                        reason: "limit".to_string(),
+                                        follow_up: follow_up.to_string(),
+                                    }),
+                                );
+                                continue;
+                            } else {
+                                identifiers.insert(
+                                    identifier.clone(),
+                                    Hydration::Pending(ProxyHydrationPending {
+                                        reason: "deadline".to_string(),
+                                        follow_up: follow_up.to_string(),
+                                    }),
+                                );
+                            }
+
+                            let tx = tx.clone();
+                            let identity = self.identity.clone();
+                            tokio::task::spawn(async move {
+                                let res = match Self::resolve_mini_doc_impl(&identifier, identity)
+                                    .await
+                                {
+                                    ResolveMiniDocResponse::Ok(Json(mini_doc)) => {
+                                        Hydration::Found(mini_doc)
+                                    }
+                                    ResolveMiniDocResponse::BadRequest(e) => {
+                                        log::warn!("minidoc fail: {:?}", e.0);
+                                        Hydration::Error(ProxyHydrationError {
+                                            reason: "failed to resolve mini doc".to_string(),
+                                            should_retry: false,
+                                            follow_up: follow_up.to_string(),
+                                        })
+                                    }
+                                };
+                                if tx.send(GetThing::Identifier(identifier, res)).await.is_ok() {
+                                    metrics::counter!("slingshot_hydrated_one", "type" => "identity", "ontime" => "true").increment(1);
+                                } else {
+                                    metrics::counter!("slingshot_hydrated_one", "type" => "identity", "ontime" => "false").increment(1);
+                                }
+                            });
+                        }
+                    }
+                }
+                // so the channel can close when all are completed
+                // (we shoudl be doing a timeout...)
+                drop(tx);
+
+                let deadline = t0 + std::time::Duration::from_secs_f64(1.6);
+                let res = tokio::time::timeout_at(deadline.into(), async {
+                    while let Some(hydration) = rx.recv().await {
+                        match hydration {
+                            GetThing::Record(uri, h) => {
+                                if let Some(r) = records.get_mut(&uri) {
+                                    match (&r, &h) {
+                                        (_, Hydration::Found(_)) => *r = h,   // always replace if found
+                                        (Hydration::Pending(_), _) => *r = h, // or if it was pending
+                                        _ => {}                               // else leave it
+                                    }
+                                } else {
+                                    records.insert(uri, h);
+                                }
+                            }
+                            GetThing::Identifier(identifier, md) => {
+                                identifiers.insert(identifier.to_string(), md);
+                            }
+                        };
+                    }
+                })
+                .await;
+
+                if res.is_ok() {
+                    metrics::histogram!("slingshot_hydration_all_completed").record(t0.elapsed());
+                } else {
+                    metrics::counter!("slingshot_hydration_cut_off").increment(1);
+                }
+
+                ProxyHydrateResponse::Ok(Json(ProxyHydrateResponseObject {
+                    output: skeleton,
+                    records,
+                    identifiers,
+                }))
+            }
+            Err(e) => {
+                log::warn!("oh no: {e:?}");
+                ProxyHydrateResponse::BadRequest(xrpc_error("oop", "sorry"))
+            }
+        }
+    }
+
     async fn get_record_impl(
         &self,
-        repo: String,
-        collection: String,
-        rkey: String,
-        cid: Option<String>,
+        repo: &str,
+        collection: &str,
+        rkey: &str,
+        cid: Option<&str>,
     ) -> GetRecordResponse {
-        let did = match Did::new(repo.clone()) {
+        let did = match Did::new(repo.to_string()) {
             Ok(did) => did,
             Err(_) => {
                 let Ok(handle) = Handle::new(repo.to_lowercase()) else {
@@ -588,19 +1149,19 @@ impl Xrpc {
             }
         };
 
-        let Ok(collection) = Nsid::new(collection) else {
+        let Ok(collection) = Nsid::new(collection.to_string()) else {
             return GetRecordResponse::BadRequest(xrpc_error(
                 "InvalidRequest",
                 "Invalid NSID for collection",
             ));
         };
 
-        let Ok(rkey) = RecordKey::new(rkey) else {
+        let Ok(rkey) = RecordKey::new(rkey.to_string()) else {
             return GetRecordResponse::BadRequest(xrpc_error("InvalidRequest", "Invalid rkey"));
         };
 
         let cid: Option<Cid> = if let Some(cid) = cid {
-            let Ok(cid) = Cid::from_str(&cid) else {
+            let Ok(cid) = Cid::from_str(cid) else {
                 return GetRecordResponse::BadRequest(xrpc_error("InvalidRequest", "Invalid CID"));
             };
             Some(cid)
@@ -743,29 +1304,45 @@ fn get_did_doc(domain: &str) -> impl Endpoint + use<> {
     make_sync(move |_| doc.clone())
 }
 
+#[poem::handler]
+async fn https_plz() -> (StatusCode, &'static str) {
+    (
+        StatusCode::MISDIRECTED_REQUEST,
+        "this service must be accessed with https (port 443).",
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn serve(
     cache: HybridCache<String, CachedRecord>,
     identity: Identity,
     repo: Repo,
-    acme_domain: Option<String>,
+    proxy: Proxy,
+    base_url: url::Url,
+    tls_domain: Option<String>,
+    tls_certs: Option<PathBuf>,
+    tls_ipv6: bool,
+    warn_insecure: bool,
+    acme_challenge_redirect: Option<String>,
     acme_contact: Option<String>,
-    acme_cache_path: Option<PathBuf>,
-    acme_ipv6: bool,
+    acme_staging: bool,
     shutdown: CancellationToken,
     bind: std::net::SocketAddr,
 ) -> Result<(), ServerError> {
     let repo = Arc::new(repo);
+    let proxy = Arc::new(proxy);
     let api_service = OpenApiService::new(
         Xrpc {
+            base_url,
             cache,
             identity,
+            proxy,
             repo,
         },
         "Slingshot",
         env!("CARGO_PKG_VERSION"),
     )
-    .server(if let Some(ref h) = acme_domain {
+    .server(if let Some(ref h) = tls_domain {
         format!("https://{h}")
     } else {
         format!("http://{bind}") // yeah should probably fix this for reverse-proxy scenarios but it's ok for dev for now
@@ -781,51 +1358,178 @@ pub async fn serve(
         "https://microcosm.blue/slingshot",
     ));
 
-    let mut app = Route::new()
+    let app = Route::new()
         .at("/", StaticFileEndpoint::new("./static/index.html"))
         .nest("/openapi", api_service.spec_endpoint())
         .nest("/xrpc/", api_service);
 
-    if let Some(domain) = acme_domain {
+    let cors = Cors::new()
+        .allow_origin_regex("*")
+        .allow_methods([Method::GET, Method::POST])
+        .allow_credentials(false);
+
+    if let Some(domain) = tls_domain {
         rustls::crypto::aws_lc_rs::default_provider()
             .install_default()
             .expect("alskfjalksdjf");
 
-        app = app.at("/.well-known/did.json", get_did_doc(&domain));
+        let app = app
+            .at("/.well-known/did.json", get_did_doc(&domain))
+            .with(cors);
 
-        let mut auto_cert = AutoCert::builder()
-            .directory_url(LETS_ENCRYPT_PRODUCTION)
-            .domain(&domain);
         if let Some(contact) = acme_contact {
-            auto_cert = auto_cert.contact(contact);
+            let (listener, app) = acmify(
+                app,
+                domain,
+                tls_certs,
+                tls_ipv6,
+                contact,
+                acme_staging,
+                warn_insecure,
+            )?;
+            run(listener, app, shutdown).await
+        } else {
+            let certs = tls_certs.expect("certs path must be set for non-acme tls");
+            let (listener, app) = tlsify(
+                app,
+                domain,
+                certs,
+                tls_ipv6,
+                acme_challenge_redirect,
+                warn_insecure,
+            )?;
+            run(listener, app, shutdown).await
         }
-        if let Some(cache_path) = acme_cache_path {
-            auto_cert = auto_cert.cache_path(cache_path);
-        }
-        let auto_cert = auto_cert.build().map_err(ServerError::AcmeBuildError)?;
-
-        run(
-            TcpListener::bind(if acme_ipv6 { "[::]:443" } else { "0.0.0.0:443" }).acme(auto_cert),
-            app,
-            shutdown,
-        )
-        .await
     } else {
-        run(TcpListener::bind(bind), app, shutdown).await
+        run(TcpListener::bind(bind), app.with(cors), shutdown).await
     }
 }
 
-async fn run<L>(listener: L, app: Route, shutdown: CancellationToken) -> Result<(), ServerError>
+fn acmify(
+    app: impl Endpoint + 'static,
+    domain: String,
+    tls_certs: Option<PathBuf>,
+    tls_ipv6: bool,
+    acme_contact: String,
+    acme_staging: bool,
+    warn_insecure: bool,
+) -> Result<(impl Listener + 'static, impl Endpoint + 'static), ServerError> {
+    let mut auto_cert = AutoCert::builder()
+        .contact(acme_contact)
+        .directory_url(if acme_staging {
+            LETS_ENCRYPT_STAGING
+        } else {
+            LETS_ENCRYPT_PRODUCTION
+        })
+        .domain(&domain)
+        .challenge_type(ChallengeType::Http01);
+
+    if let Some(path) = tls_certs {
+        auto_cert = auto_cert.cache_path(path);
+    } else {
+        log::warn!(
+            "provisioning acme certs without `--tls-certs` folder configured, you might hit letsencrypt rate limits."
+        );
+    }
+
+    let auto_cert = auto_cert.build().map_err(ServerError::AcmeBuildError)?;
+
+    let mut insecure_app = Route::new().at(
+        "/.well-known/acme-challenge/:token",
+        auto_cert.http_01_endpoint(),
+    );
+
+    if warn_insecure {
+        insecure_app = insecure_app.at("/*any", https_plz).at("/", https_plz);
+    }
+
+    let app = RouteScheme::new().https(app).http(insecure_app);
+
+    let listener = TcpListener::bind(if tls_ipv6 { "[::]:443" } else { "0.0.0.0:443" })
+        .acme(auto_cert)
+        .combine(TcpListener::bind(if tls_ipv6 {
+            "[::]:80"
+        } else {
+            "0.0.0.0:80"
+        }));
+
+    Ok((listener, app))
+}
+
+fn tlsify(
+    app: impl Endpoint + 'static,
+    domain: String,
+    tls_certs: PathBuf,
+    tls_ipv6: bool,
+    acme_challenge_redirect: Option<String>,
+    warn_insecure: bool,
+) -> Result<(impl Listener + 'static, impl Endpoint + 'static), ServerError> {
+    use poem::listener::{RustlsCertificate, RustlsConfig};
+    use std::path::Path;
+
+    fn load_tls_config(f: &Path, domain: &str) -> Result<RustlsConfig, std::io::Error> {
+        let cert_contents = std::fs::read(f.join("cert.pem"))
+            .inspect_err(|e| log::error!("failed to read cert file in {f:?}: {e}"))?;
+
+        let key_contents = std::fs::read(f.join("key.pem"))
+            .inspect_err(|e| log::error!("failed to read key file in {f:?}: {e}"))?;
+
+        let cert = RustlsCertificate::new()
+            .cert(cert_contents)
+            .key(key_contents);
+        Ok(RustlsConfig::new().certificate(domain, cert))
+    }
+
+    let listener = TcpListener::bind(if tls_ipv6 { "[::]:443" } else { "0.0.0.0:443" })
+        .rustls(async_stream::stream! {
+            loop {
+                if let Ok(tls_config) = load_tls_config(&tls_certs, &domain) {
+                    // TODO: cert reload healthcheck
+                    yield tls_config;
+                } else {
+                    log::warn!("failed to load tls config.");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(3600 * 12)).await;
+            }
+        })
+        // TODO: should be allowed to run in tls mode without binding port 80 if not forwarding acme challenges
+        .combine(TcpListener::bind(if tls_ipv6 {
+            "[::]:80"
+        } else {
+            "0.0.0.0:80"
+        }));
+
+    let app = if let Some(redir) = acme_challenge_redirect {
+        use poem::web;
+
+        let redirect = poem::endpoint::make_sync(move |req| {
+            let token = req.path_params::<String>().unwrap();
+            metrics::counter!("http_challenge_redirects").increment(1);
+            web::Redirect::temporary(format!("{redir}{token}"))
+        });
+
+        let mut insecure_app = Route::new().at("/.well-known/acme-challenge/:token", redirect);
+
+        if warn_insecure {
+            insecure_app = insecure_app.at("/*any", https_plz).at("/", https_plz);
+        }
+
+        RouteScheme::new().https(app).http(insecure_app)
+    } else if warn_insecure {
+        RouteScheme::new().https(app).http(https_plz)
+    } else {
+        RouteScheme::new().https(app)
+    };
+
+    Ok((listener, app))
+}
+
+async fn run<L, A>(listener: L, app: A, shutdown: CancellationToken) -> Result<(), ServerError>
 where
     L: Listener + 'static,
+    A: Endpoint + 'static,
 {
     let app = app
-        .with(
-            Cors::new()
-                .allow_origin_regex("*")
-                .allow_methods([Method::GET])
-                .allow_credentials(false),
-        )
         .with(CatchPanic::new())
         .around(request_counter)
         .with(Tracing);
@@ -839,15 +1543,46 @@ where
 }
 
 async fn request_counter<E: Endpoint>(next: E, req: poem::Request) -> poem::Result<poem::Response> {
-    let t0 = std::time::Instant::now();
+    // extract request details before we lose access
     let method = req.method().to_string();
     let path = req.uri().path().to_string();
+    let h = req.headers();
+    let ua = match h.get("user-agent").and_then(|v| v.to_str().ok()) {
+        None => "[no ua]".to_string(),
+        Some(ua) if ua.starts_with("Mozilla/") => "[browser-y]".to_string(),
+        Some(ua) => format!("ua:{ua}"),
+    };
+    let origin = h
+        .get("origin")
+        .and_then(|v| v.to_str().ok())
+        .map(|o| format!("origin:{o}"))
+        .unwrap_or("[no origin]".to_string());
+
+    // actually forward the request down
+    let t0 = std::time::Instant::now();
     let res = next.call(req).await?.into_response();
+    let dt = t0.elapsed();
+
+    // grab remaining details
+    let status = res.status();
+    let path = match status {
+        StatusCode::MISDIRECTED_REQUEST => "[rejected http]",
+        StatusCode::NOT_FOUND => "[not found]",
+        _ => &path,
+    };
     metrics::histogram!(
         "server_request",
         "endpoint" => format!("{method} {path}"),
-        "status" => res.status().to_string(),
+        "status" => status.as_str().to_string(), // just the number
     )
-    .record(t0.elapsed());
+    .record(dt);
+
+    metrics::counter!(
+        "server_request_source",
+        "ua" => ua,
+        "origin" => origin,
+    )
+    .increment(1);
+
     Ok(res)
 }

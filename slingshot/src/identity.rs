@@ -17,15 +17,15 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::IdentityError;
 use atrium_api::{
-    did_doc::DidDocument,
+    did_doc::{DidDocument, Service as DidDocServic},
     types::string::{Did, Handle},
+    xrpc::{self, HttpClient},
 };
 use atrium_common::resolver::Resolver;
 use atrium_identity::{
     did::{CommonDidResolver, CommonDidResolverConfig},
     handle::{AtprotoHandleResolver, AtprotoHandleResolverConfig, DnsTxtResolver},
 };
-use atrium_oauth::DefaultHttpClient; // it's probably not worth bringing all of atrium_oauth for this but
 use foyer::{
     BlockEngineConfig, DeviceBuilder, FsDeviceBuilder, HybridCache, HybridCacheBuilder,
     PsyncIoEngineConfig,
@@ -36,11 +36,16 @@ use time::UtcDateTime;
 /// once we have something resolved, don't re-resolve until after this period
 const MIN_TTL: Duration = Duration::from_secs(4 * 3600); // probably shoudl have a max ttl
 const MIN_NOT_FOUND_TTL: Duration = Duration::from_secs(60);
+const MIN_INVALID_TTL: Duration = Duration::from_secs(60);
+
+const HTTP_TIMEOUT: Duration = Duration::from_secs(12);
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IdentityKey {
     Handle(Handle),
     Did(Did),
+    ServiceDid(Did),
 }
 
 impl IdentityKey {
@@ -48,6 +53,7 @@ impl IdentityKey {
         let s = match self {
             IdentityKey::Handle(h) => h.as_str(),
             IdentityKey::Did(d) => d.as_str(),
+            IdentityKey::ServiceDid(d) => d.as_str(),
         };
         std::mem::size_of::<Self>() + std::mem::size_of_val(s)
     }
@@ -59,8 +65,10 @@ struct IdentityVal(UtcDateTime, IdentityData);
 #[derive(Debug, Serialize, Deserialize)]
 enum IdentityData {
     NotFound,
-    Did(Did),
-    Doc(PartialMiniDoc),
+    Did(Did),                   // from handle
+    Doc(PartialMiniDoc),        // from did
+    ServiceDoc(MiniServiceDoc), // from service did
+    Invalid(String),
 }
 
 impl IdentityVal {
@@ -68,11 +76,22 @@ impl IdentityVal {
         let wrapping = std::mem::size_of::<Self>();
         let inner = match &self.1 {
             IdentityData::NotFound => 0,
+            IdentityData::Invalid(s) => std::mem::size_of_val(s.as_str()),
             IdentityData::Did(d) => std::mem::size_of_val(d.as_str()),
             IdentityData::Doc(d) => {
                 std::mem::size_of_val(d.unverified_handle.as_str())
-                    + std::mem::size_of_val(d.pds.as_str())
-                    + std::mem::size_of_val(d.signing_key.as_str())
+                    + std::mem::size_of_val(&d.pds)
+                    + std::mem::size_of_val(&d.signing_key)
+            }
+            IdentityData::ServiceDoc(d) => {
+                let mut s = std::mem::size_of::<MiniServiceDoc>();
+                s += std::mem::size_of_val(&d.services);
+                for sv in &d.services {
+                    s += std::mem::size_of_val(&sv.full_id);
+                    s += std::mem::size_of_val(&sv.r#type);
+                    s += std::mem::size_of_val(&sv.endpoint);
+                }
+                s
             }
         };
         wrapping + inner
@@ -168,6 +187,62 @@ impl TryFrom<DidDocument> for PartialMiniDoc {
     }
 }
 
+/// Simplified info from service DID docs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MiniServiceDoc {
+    services: Vec<MiniService>,
+}
+
+impl MiniServiceDoc {
+    pub fn get(&self, id_fragment: &str, service_type: Option<&str>) -> Option<&MiniService> {
+        self.services.iter().find(|ms| {
+            ms.full_id.ends_with(id_fragment)
+                && service_type.map(|t| t == ms.r#type).unwrap_or(true)
+        })
+    }
+}
+
+/// The corresponding service info
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MiniService {
+    /// The full id
+    ///
+    /// for informational purposes only -- services are deduplicated by id fragment
+    full_id: String,
+    r#type: String,
+    /// HTTP endpoint for the actual service
+    pub endpoint: String,
+}
+
+impl TryFrom<DidDocument> for MiniServiceDoc {
+    type Error = String;
+    fn try_from(did_doc: DidDocument) -> Result<Self, Self::Error> {
+        let mut services = Vec::new();
+        let mut seen = HashSet::new();
+
+        for DidDocServic {
+            id,
+            r#type,
+            service_endpoint,
+        } in did_doc.service.unwrap_or(vec![])
+        {
+            let Some((_, id_fragment)) = id.rsplit_once('#') else {
+                continue;
+            };
+            if !seen.insert((id_fragment.to_string(), r#type.clone())) {
+                continue;
+            }
+            services.push(MiniService {
+                full_id: id,
+                r#type,
+                endpoint: service_endpoint,
+            });
+        }
+
+        Ok(Self { services })
+    }
+}
+
 /// multi-producer *single-consumer* queue structures (wrap in arc-mutex plz)
 ///
 /// the hashset allows testing for presense of items in the queue.
@@ -180,8 +255,8 @@ struct RefreshQueue {
 
 #[derive(Clone)]
 pub struct Identity {
-    handle_resolver: Arc<AtprotoHandleResolver<HickoryDnsTxtResolver, DefaultHttpClient>>,
-    did_resolver: Arc<CommonDidResolver<DefaultHttpClient>>,
+    handle_resolver: Arc<AtprotoHandleResolver<HickoryDnsTxtResolver, ReqwestHttpClient>>,
+    did_resolver: Arc<CommonDidResolver<ReqwestHttpClient>>,
     cache: HybridCache<IdentityKey, IdentityVal>,
     /// multi-producer *single consumer* queue
     refresh_queue: Arc<Mutex<RefreshQueue>>,
@@ -196,7 +271,12 @@ impl Identity {
         disk_gb: usize,
         plc_directory_url: String,
     ) -> Result<Self, IdentityError> {
-        let http_client = Arc::new(DefaultHttpClient::default());
+        let timeout_client = reqwest::Client::builder()
+            .timeout(HTTP_TIMEOUT)
+            .connect_timeout(HTTP_CONNECT_TIMEOUT)
+            .build()
+            .unwrap();
+        let http_client = Arc::new(ReqwestHttpClient::new(timeout_client));
         let handle_resolver = AtprotoHandleResolver::new(AtprotoHandleResolverConfig {
             dns_txt_resolver: HickoryDnsTxtResolver::new().unwrap(),
             http_client: http_client.clone(),
@@ -228,6 +308,11 @@ impl Identity {
             refresh_queue: Default::default(),
             refresher_task: Default::default(),
         })
+    }
+
+    pub async fn close(self) -> Result<(), foyer::Error> {
+        self.cache.close().await?;
+        Ok(())
     }
 
     /// Resolve (and verify!) an atproto handle to a DID
@@ -297,13 +382,16 @@ impl Identity {
         let now = UtcDateTime::now();
         let IdentityVal(last_fetch, data) = entry.value();
         match data {
-            IdentityData::Doc(_) => {
-                log::error!("identity value mixup: got a doc from a handle key (should be a did)");
-                Err(IdentityError::IdentityValTypeMixup(handle.to_string()))
-            }
             IdentityData::NotFound => {
                 if (now - *last_fetch) >= MIN_NOT_FOUND_TTL {
                     metrics::counter!("identity_handle_refresh_queued", "reason" => "ttl", "found" => "false").increment(1);
+                    self.queue_refresh(key).await;
+                }
+                Ok(None)
+            }
+            IdentityData::Invalid(_reason) => {
+                if (now - *last_fetch) >= MIN_INVALID_TTL {
+                    metrics::counter!("identity_handle_refresh_queued", "reason" => "ttl", "found" => "invalid").increment(1);
                     self.queue_refresh(key).await;
                 }
                 Ok(None)
@@ -314,6 +402,10 @@ impl Identity {
                     self.queue_refresh(key).await;
                 }
                 Ok(Some(did.clone()))
+            }
+            IdentityData::Doc(_) | IdentityData::ServiceDoc(_) => {
+                log::error!("identity value mixup: got a doc from a handle key (should be a did)");
+                Err(IdentityError::IdentityValTypeMixup(handle.to_string()))
             }
         }
     }
@@ -335,8 +427,9 @@ impl Identity {
                     let (res, success) = match resolver.resolve(&did).await {
                         Ok(did_doc) if did_doc.id != did.to_string() => (
                             // TODO: fix in atrium: should verify id is did
-                            Err(IdentityError::BadDidDoc(
-                                "did doc's id did not match did".to_string(),
+                            Ok(IdentityVal(
+                                UtcDateTime::now(),
+                                IdentityData::Invalid("Wrong `id` in DID doc".to_string()),
                             )),
                             "false",
                         ),
@@ -345,7 +438,16 @@ impl Identity {
                                 Ok(IdentityVal(UtcDateTime::now(), IdentityData::Doc(mini_doc))),
                                 "true",
                             ),
-                            Err(e) => (Err(IdentityError::BadDidDoc(e)), "false"),
+                            Err(err) => {
+                                log::info!("failed to convert to mini doc for {did:?}: {err}");
+                                (
+                                    Ok(IdentityVal(
+                                        UtcDateTime::now(),
+                                        IdentityData::Invalid("Bad DID doc".to_string()),
+                                    )),
+                                    "false",
+                                )
+                            }
                         },
                         Err(atrium_identity::Error::NotFound) => (
                             Ok(IdentityVal(UtcDateTime::now(), IdentityData::NotFound)),
@@ -363,10 +465,6 @@ impl Identity {
         let now = UtcDateTime::now();
         let IdentityVal(last_fetch, data) = entry.value();
         match data {
-            IdentityData::Did(_) => {
-                log::error!("identity value mixup: got a did from a did key (should be a doc)");
-                Err(IdentityError::IdentityValTypeMixup(did.to_string()))
-            }
             IdentityData::NotFound => {
                 if (now - *last_fetch) >= MIN_NOT_FOUND_TTL {
                     metrics::counter!("identity_did_refresh_queued", "reason" => "ttl", "found" => "false").increment(1);
@@ -374,23 +472,140 @@ impl Identity {
                 }
                 Ok(None)
             }
-            IdentityData::Doc(mini_did) => {
+            IdentityData::Invalid(_reason) => {
+                if (now - *last_fetch) >= MIN_INVALID_TTL {
+                    metrics::counter!("identity_did_refresh_queued", "reason" => "ttl", "found" => "invalid").increment(1);
+                    self.queue_refresh(key).await;
+                }
+                Ok(None)
+            }
+            IdentityData::Doc(mini_doc) => {
                 if (now - *last_fetch) >= MIN_TTL {
                     metrics::counter!("identity_did_refresh_queued", "reason" => "ttl", "found" => "true").increment(1);
                     self.queue_refresh(key).await;
                 }
-                Ok(Some(mini_did.clone()))
+                Ok(Some(mini_doc.clone()))
+            }
+            IdentityData::Did(_) | IdentityData::ServiceDoc(_) => {
+                log::error!("identity value mixup: got a doc from a handle key (should be a did)");
+                Err(IdentityError::IdentityValTypeMixup(did.to_string()))
             }
         }
     }
 
-    /// put a refresh task on the queue
+    /// Fetch (and cache) a service mini doc from a did
+    pub async fn did_to_mini_service_doc(
+        &self,
+        did: &Did,
+    ) -> Result<Option<MiniServiceDoc>, IdentityError> {
+        let key = IdentityKey::ServiceDid(did.clone());
+        metrics::counter!("slingshot_get_service_did_doc").increment(1);
+        let entry = self
+            .cache
+            .get_or_fetch(&key, {
+                let did = did.clone();
+                let resolver = self.did_resolver.clone();
+                || async move {
+                    let t0 = Instant::now();
+                    let (res, success) = match resolver.resolve(&did).await {
+                        Ok(did_doc) if did_doc.id != did.to_string() => (
+                            // TODO: fix in atrium: should verify id is did
+                            Ok(IdentityVal(
+                                UtcDateTime::now(),
+                                IdentityData::Invalid("Wrong `id` in DID doc".to_string()),
+                            )),
+                            "false",
+                        ),
+                        Ok(did_doc) => match did_doc.try_into() {
+                            Ok(mini_service_doc) => (
+                                Ok(IdentityVal(
+                                    UtcDateTime::now(),
+                                    IdentityData::ServiceDoc(mini_service_doc),
+                                )),
+                                "true",
+                            ),
+                            Err(err) => {
+                                log::info!("failed to convert to service doc for {did:?}: {err}");
+                                (
+                                    Ok(IdentityVal(
+                                        UtcDateTime::now(),
+                                        IdentityData::Invalid("Bad DID doc".to_string()),
+                                    )),
+                                    "false",
+                                )
+                            }
+                        },
+                        Err(atrium_identity::Error::NotFound) => (
+                            Ok(IdentityVal(UtcDateTime::now(), IdentityData::NotFound)),
+                            "false",
+                        ),
+                        Err(other) => (Err(IdentityError::ResolutionFailed(other)), "false"),
+                    };
+                    metrics::histogram!("slingshot_fetch_service_did_doc", "success" => success)
+                        .record(t0.elapsed());
+                    res
+                }
+            })
+            .await?;
+
+        let now = UtcDateTime::now();
+        let IdentityVal(last_fetch, data) = entry.value();
+        match data {
+            IdentityData::NotFound => {
+                if (now - *last_fetch) >= MIN_NOT_FOUND_TTL {
+                    metrics::counter!("identity_service_did_refresh_queued", "reason" => "ttl", "found" => "false").increment(1);
+                    self.queue_refresh(key).await;
+                }
+                Ok(None)
+            }
+            IdentityData::Invalid(_reason) => {
+                if (now - *last_fetch) >= MIN_INVALID_TTL {
+                    metrics::counter!("identity_service_did_refresh_queued", "reason" => "ttl", "found" => "invalid").increment(1);
+                    self.queue_refresh(key).await;
+                }
+                Ok(None)
+            }
+            IdentityData::ServiceDoc(mini_service_doc) => {
+                if (now - *last_fetch) >= MIN_TTL {
+                    metrics::counter!("identity_service_did_refresh_queued", "reason" => "ttl", "found" => "true").increment(1);
+                    self.queue_refresh(key).await;
+                }
+                Ok(Some(mini_service_doc.clone()))
+            }
+            IdentityData::Did(_) | IdentityData::Doc(_) => {
+                log::error!(
+                    "identity value mixup: got a doc from a different key type (should be a service did)"
+                );
+                Err(IdentityError::IdentityValTypeMixup(did.to_string()))
+            }
+        }
+    }
+
+    /// put a refresh task on the queue if it's not in there already
     ///
     /// this can be safely called from multiple concurrent tasks
-    pub async fn queue_refresh(&self, key: IdentityKey) {
+    async fn queue_refresh(&self, key: IdentityKey) {
         // todo: max queue size
         let mut q = self.refresh_queue.lock().await;
         if !q.items.contains(&key) {
+            q.items.insert(key.clone());
+            q.queue.push_back(key);
+        }
+    }
+
+    /// put a refresh task as the next task
+    ///
+    /// remove any further back for the same identity
+    ///
+    /// this can be safely called from multiple concurrent tasks
+    pub async fn refresh(&self, key: IdentityKey) {
+        // todo: max queue size
+        let mut q = self.refresh_queue.lock().await;
+        if q.items.contains(&key) {
+            log::warn!(
+                "dropping external refresh hint because it's already queued, but we should queue anyway if the queued one is mid-refresh (TODO)"
+            );
+        } else {
             q.items.insert(key.clone());
             q.queue.push_back(key);
         }
@@ -517,18 +732,30 @@ impl Identity {
                             // TODO: fix in atrium: should verify id is did
                             if did_doc.id != did.to_string() {
                                 metrics::counter!("identity_did_refresh", "success" => "false", "reason" => "wrong did").increment(1);
-                                log::warn!(
-                                    "refreshed did doc failed: wrong did doc id. dropping refresh."
+                                log::warn!("refreshed did doc failed: wrong did doc id");
+                                self.cache.insert(
+                                    task_key.clone(),
+                                    IdentityVal(
+                                        UtcDateTime::now(),
+                                        IdentityData::Invalid("Wrong `id` in DID doc".to_string()),
+                                    ),
                                 );
+                                self.complete_refresh(&task_key).await?;
                                 continue;
                             }
                             let mini_doc = match did_doc.try_into() {
                                 Ok(md) => md,
                                 Err(e) => {
                                     metrics::counter!("identity_did_refresh", "success" => "false", "reason" => "bad doc").increment(1);
-                                    log::warn!(
-                                        "converting mini doc failed: {e:?}. dropping refresh."
+                                    log::warn!("converting mini doc for {did:?} failed: {e:?}");
+                                    self.cache.insert(
+                                        task_key.clone(),
+                                        IdentityVal(
+                                            UtcDateTime::now(),
+                                            IdentityData::Invalid("Bad DID doc".to_string()),
+                                        ),
                                     );
+                                    self.complete_refresh(&task_key).await?;
                                     continue;
                                 }
                             };
@@ -556,8 +783,96 @@ impl Identity {
 
                     self.complete_refresh(&task_key).await?; // failures are bugs, so break loop
                 }
+                IdentityKey::ServiceDid(ref did) => {
+                    log::trace!("refreshing service did doc: {did:?}");
+
+                    match self.did_resolver.resolve(did).await {
+                        Ok(did_doc) => {
+                            // TODO: fix in atrium: should verify id is did
+                            if did_doc.id != did.to_string() {
+                                metrics::counter!("identity_service_did_refresh", "success" => "false", "reason" => "wrong did").increment(1);
+                                log::warn!("refreshed did doc failed: wrong did doc id");
+                                self.cache.insert(
+                                    task_key.clone(),
+                                    IdentityVal(
+                                        UtcDateTime::now(),
+                                        IdentityData::Invalid("Wrong `id` in DID doc".to_string()),
+                                    ),
+                                );
+                                self.complete_refresh(&task_key).await?;
+                                continue;
+                            }
+                            let mini_service_doc = match did_doc.try_into() {
+                                Ok(md) => md,
+                                Err(e) => {
+                                    metrics::counter!("identity_service_did_refresh", "success" => "false", "reason" => "bad doc").increment(1);
+                                    log::warn!("converting mini service doc failed: {e:?}");
+                                    self.cache.insert(
+                                        task_key.clone(),
+                                        IdentityVal(
+                                            UtcDateTime::now(),
+                                            IdentityData::Invalid("Bad DID doc".to_string()),
+                                        ),
+                                    );
+                                    self.complete_refresh(&task_key).await?;
+                                    continue;
+                                }
+                            };
+                            metrics::counter!("identity_service_did_refresh", "success" => "true")
+                                .increment(1);
+                            self.cache.insert(
+                                task_key.clone(),
+                                IdentityVal(
+                                    UtcDateTime::now(),
+                                    IdentityData::ServiceDoc(mini_service_doc),
+                                ),
+                            );
+                        }
+                        Err(atrium_identity::Error::NotFound) => {
+                            metrics::counter!("identity_service_did_refresh", "success" => "false", "reason" => "not found").increment(1);
+                            self.cache.insert(
+                                task_key.clone(),
+                                IdentityVal(UtcDateTime::now(), IdentityData::NotFound),
+                            );
+                        }
+                        Err(err) => {
+                            metrics::counter!("identity_service_did_refresh", "success" => "false", "reason" => "other").increment(1);
+                            log::warn!(
+                                "failed to refresh did doc: {err:?}. leaving stale (should we eventually do something?)"
+                            );
+                        }
+                    }
+
+                    self.complete_refresh(&task_key).await?;
+                }
             }
         }
+    }
+}
+
+/// custom client for atrium that we can put timeouts / other config on
+struct ReqwestHttpClient(reqwest::Client);
+
+impl ReqwestHttpClient {
+    fn new(client: reqwest::Client) -> Self {
+        Self(client)
+    }
+}
+
+impl HttpClient for ReqwestHttpClient {
+    async fn send_http(
+        &self,
+        req: xrpc::http::Request<Vec<u8>>,
+    ) -> Result<xrpc::http::Response<Vec<u8>>, Box<dyn std::error::Error + Send + Sync + 'static>>
+    {
+        let response = self.0.execute(req.try_into()?).await?;
+        let mut builder = xrpc::http::Response::builder().status(response.status());
+        for (k, v) in response.headers() {
+            builder = builder.header(k, v);
+        }
+        builder
+            .body(response.bytes().await?.to_vec())
+            .map_err(Into::into)
     }
 }
 
