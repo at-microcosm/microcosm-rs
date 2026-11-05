@@ -1,0 +1,64 @@
+{% extends "base.html.j2" %}
+{% import "try-it-macros.html.j2" as try_it %}
+
+{% block title %}Many-to-Many Links{% endblock %}
+{% block description %}All {{ query.source }} records with many-to-many links to {{ query.subject }} joining through {{ query.path_to_other }}{% endblock %}
+
+{% block content %}
+
+  {% call try_it::get_many_to_many(query.subject, query.source, query.path_to_other, query.link_did, query.other_subject, query.limit) %}
+
+  <h2>
+    Many-to-many links to <code>{{ query.subject }}</code>
+    {% if let Some(browseable_uri) = query.subject|to_browseable %}
+      <small style="font-weight: normal; font-size: 1rem"><a href="{{ browseable_uri }}">browse record</a></small>
+    {% endif %}
+  </h2>
+
+  <p><strong>Many-to-many links</strong> from <code>{{ query.source }}</code> joining through <code>{{ query.path_to_other }}</code></p>
+
+  <ul>
+    <li>See all links to this target at <code>/links/all</code>: <a href="/links/all?target={{ query.subject|urlencode }}">/links/all?target={{ query.subject }}</a></li>
+    {# todo: add link to see many-to-many counts #}
+  </ul>
+
+  <h3>Many-to-many links, most recent first:</h3>
+
+  {% for item in items %}
+<pre style="display: block; margin: 1em 2em" class="code"><strong>Linking record</strong>:
+    {%- if let Some(uri) = item.link_record.uri().as_str()|to_browseable %} <a href="{{ uri }}">browse link record</a>{% endif %}
+  DID:         {{ item.link_record.did().0 }}
+  Collection:  {{ item.link_record.collection() }}
+  RKey:        {{ item.link_record.rkey() }}
+<strong>Other subject</strong>: {{ item.other_subject }}
+  {%- if let Some(uri) = item.other_subject.as_str()|to_browseable %}
+  -> <a href="{{ uri }}">browse subject</a>
+  {%- endif %}
+</pre>
+  {% endfor %}
+
+  {% if let Some(c) = cursor %}
+    <form method="get" action="/xrpc/blue.microcosm.links.getManyToMany">
+      <input type="hidden" name="subject" value="{{ query.subject }}" />
+      <input type="hidden" name="source" value="{{ query.source }}" />
+      <input type="hidden" name="pathToOther" value="{{ query.path_to_other }}" />
+      {% for did in query.link_did %}
+        <input type="hidden" name="did" value="{{ did }}" />
+      {% endfor %}
+      {% for other in query.other_subject %}
+        <input type="hidden" name="otherSubject" value="{{ other }}" />
+      {% endfor %}
+      <input type="hidden" name="limit" value="{{ query.limit }}" />
+      <input type="hidden" name="cursor" value={{ c|json|safe }} />
+      <button type="submit">next page&hellip;</button>
+    </form>
+  {% else %}
+    <button disabled><em>end of results</em></button>
+  {% endif %}
+
+  <details>
+    <summary>Raw JSON response</summary>
+    <pre class="code">{{ self|tojson }}</pre>
+  </details>
+
+{% endblock %}

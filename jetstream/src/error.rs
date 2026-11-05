@@ -26,9 +26,15 @@ pub enum ConnectionError {
     #[error("failed to construct url: {0}")]
     InvalidEndpointUri(#[from] tokio_tungstenite::tungstenite::http::uri::InvalidUri),
     #[error("failed to connect to Jetstream instance: {0}")]
-    WebSocketFailure(#[from] tokio_tungstenite::tungstenite::Error),
+    WebSocketFailure(Box<tokio_tungstenite::tungstenite::Error>),
     #[error("the Jetstream config is invalid (this really should not happen here): {0}")]
     InvalidConfig(#[from] ConfigValidationError),
+}
+
+impl From<tokio_tungstenite::tungstenite::Error> for ConnectionError {
+    fn from(e: tokio_tungstenite::tungstenite::Error) -> Self {
+        Self::WebSocketFailure(Box::new(e))
+    }
 }
 
 /// Possible errors that can occur when receiving events from a Jetstream instance over WebSockets.

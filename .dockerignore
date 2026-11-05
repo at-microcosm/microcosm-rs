@@ -1,0 +1,18 @@
+# Keep the build context small: source only, no build output or local data.
+.git
+**/target
+
+# local rocksdb data / backups
+rocks.test
+rocks.tapbackfill
+**/*.db
+**/*.db-*
+
+# editor / OS cruft
+.DS_Store
+**/.idea
+**/.vscode
+
+# docker files themselves don't need to be in the context
+**/Dockerfile
+docker-compose.yml

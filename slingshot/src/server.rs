@@ -6,7 +6,7 @@ use crate::{
 };
 use atrium_api::types::string::{AtIdentifier, Cid, Did, Handle, Nsid, RecordKey};
 use foyer::HybridCache;
-use links::at_uri::parse_at_uri as normalize_at_uri;
+use microcosm_links::at_uri::parse_at_uri as normalize_at_uri;
 use serde::Serialize;
 use std::{collections::HashMap, path::PathBuf, str::FromStr, sync::Arc, time::Instant};
 use tokio::sync::mpsc;

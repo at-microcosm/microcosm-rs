@@ -2,8 +2,10 @@ use fluent_uri::Uri;
 
 pub mod at_uri;
 pub mod did;
+#[cfg(feature = "json")]
 pub mod record;
 
+#[cfg(feature = "json")]
 pub use record::collect_links;
 
 #[derive(Debug, Clone, Ord, Eq, PartialOrd, PartialEq)]
@@ -120,7 +122,16 @@ mod tests {
         assert_eq!(
             parse_any_link("did:plc:44ybard66vv44zksje25o7dz"),
             Some(Link::Did("did:plc:44ybard66vv44zksje25o7dz".into()))
-        )
+        );
+
+        assert_eq!(
+            parse_any_link("tel:5551234567"),
+            Some(Link::Uri("tel:5551234567".into())),
+        );
+
+        assert_eq!(parse_any_link("3jwdwj2ctlk26"), None);
+        assert_eq!(parse_any_link("self"), None);
+        assert_eq!(parse_any_link(""), None);
     }
 
     #[test]

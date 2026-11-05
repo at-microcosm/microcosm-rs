@@ -1,4 +1,4 @@
-use links::{parse_any_link, Link};
+use microcosm_links::{parse_any_link, Link};
 use num_format::{Locale, ToFormattedString};
 
 pub fn to_browseable(s: &str) -> askama::Result<Option<String>> {

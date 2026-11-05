@@ -82,6 +82,46 @@
     25,
   ) %}
 
+  <h3 class="route"><code>GET /xrpc/blue.microcosm.links.getManyToMany</code></h3>
+
+  <p>A list of many-to-many join records linking to a target and a secondary target.</p>
+
+  <h4>Query parameters:</h4>
+
+  <ul>
+    <li><p><code>subject</code>: required, must url-encode. Example: <code>at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r</code></p></li>
+    <li><p><code>source</code>: required. Example: <code>app.bsky.feed.like:subject.uri</code></p></li>
+    <li><p><code>pathToOther</code>: required. Path to the secondary link in the many-to-many record. Example: <code>otherThing.uri</code></p></li>
+    <li><p><code>did</code>: optional, filter links to those from specific users. Include multiple times to filter by multiple users. Example: <code>did=did:plc:vc7f4oafdgxsihk4cry2xpze&did=did:plc:vc7f4oafdgxsihk4cry2xpze</code></p></li>
+    <li><p><code>otherSubject</code>: optional, filter secondary links to specific subjects. Include multiple times to filter by multiple subjects. Example: <code>at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r</code></p></li>
+    <li><p><code>limit</code>: optional. Default: <code>16</code>. Maximum: <code>100</code></p></li>
+  </ul>
+
+  <p style="margin-bottom: 0"><strong>Try it:</strong></p>
+  {% call try_it::get_many_to_many(
+    "at://did:plc:uyauirpjzk6le4ygqzatcwnq/app.bsky.graph.list/3lzhg33t5bf2h",
+    "app.bsky.graph.listitem:list",
+    "subject",
+    [""],
+    [""],
+    16,
+  ) %}
+
+  <h3 class="route"><code>GET /xrpc/blue.microcosm.links.getDistinct</code></h3>
+
+  <p>A list of distinct DIDs (identities) with links to a target.</p>
+
+  <h4>Query parameters:</h4>
+
+  <ul>
+    <li><code>subject</code>: required, must url-encode. The target being linked to. Example: <code>did:plc:vc7f4oafdgxsihk4cry2xpze</code> or <code>at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r</code></li>
+    <li><code>source</code>: required. Collection and path specification for the primary link. Example: <code>app.bsky.feed.like:subject.uri</code></li>
+    <li><code>limit</code>: optional. Number of results to return. Default: <code>16</code>. Maximum: <code>100</code></li>
+    <li><code>cursor</code>: optional, see Definitions.</li>
+  </ul>
+
+  <p style="margin-bottom: 0"><strong>Try it:</strong></p>
+  {% call try_it::get_backlink_dids("at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r", "app.bsky.feed.like:subject.uri") %}
 
   <h3 class="route"><code>GET /links</code></h3>
 
@@ -103,7 +143,6 @@
 
   <p style="margin-bottom: 0"><strong>Try it:</strong></p>
   {% call try_it::links("at://did:plc:a4pqq234yw7fqbddawjo7y35/app.bsky.feed.post/3m237ilwc372e", "app.bsky.feed.like", ".subject.uri", [""], 16) %}
-
 
   <h3 class="route"><code>GET /links/distinct-dids</code></h3>
 
@@ -204,13 +243,19 @@
 
   <p>A DID like <code>did:plc:hdhoaan3xa3jiuq4fg4mefid</code>, or an AT-URI like <code>at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/3lgu4lg6j2k2v</code>, or a URI like <code>https://example.com</code>.</p>
 
+  <h3>Source</h3>
+
+  <p>A <em>link source</em>, made of a collection and path, like <code>app.bsky.feed.like:subject<code>. The <code>:</code> separates them.
+
   <h3>Collection</h3>
 
   <p>A record NSID like <code>app.bsky.feed.like</code>.</p>
 
   <h3>Path</h3>
 
-  <p>A (currently-very-very-hacky) json-path-ish representation of the source of a link in a record. Records may contain multiple links with different meanings, so this specifies which specific link is of interest. Like <code>.subject.uri</code>.</p>
+  <p>A (currently-hacky) json-path-ish representation of the source of a link in a record. Records may contain multiple links with different meanings, so this specifies which specific link is of interest. Like <code>.subject.uri</code>.</p>
+
+  <p>A special path, <code>.</code>, represents <em>the record's <code>rkey</code></em>. Tangled's vouch system puts the vouch subject in the <code>rkey</code> instead of inside the actual record. Its link source looks like this: <code>sh.tangled.graph.vouch:.</code></p>
 
   <h3>Cursor</h3>
 

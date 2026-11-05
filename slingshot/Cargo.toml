@@ -11,21 +11,21 @@ atrium-identity = "0.2.0"
 clap = { workspace = true }
 ctrlc = "3.4.7"
 foyer = { version = "0.22.3", features = ["serde"] }
-hickory-resolver = "0.25.2"
+hickory-resolver = "0.26.3"
 jetstream = { path = "../jetstream", features = ["metrics"] }
-links = { path = "../links" }
+microcosm-links = { path = "../links" }
 log = "0.4.27"
 metrics = "0.24.2"
 metrics-util = "0.20.1"
 metrics-exporter-prometheus = { version = "0.17.1", features = ["http-listener"] }
 poem = { git = "https://github.com/uniphil/poem.git", branch = "acme/issue-async", features = ["acme", "static-files"] }
 poem-openapi = { git = "https://github.com/uniphil/poem.git", branch = "acme/issue-async", features = ["scalar"] }
-reqwest = { version = "0.12.22", features = ["json"] }
+reqwest = { version = "0.12.22", features = ["json", "gzip"] }
 rustls = "0.23.31"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.141", features = ["raw_value"] }
 thiserror = "2.0.12"
-time = { version = "0.3.41", features = ["serde"] }
+time = { version = "0.3.47", features = ["serde"] }
 tokio = { version = "1.47.0", features = ["full"] }
 tokio-util = "0.7.15"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }

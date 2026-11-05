@@ -1,4 +1,4 @@
-use hickory_resolver::{ResolveError, TokioResolver};
+use hickory_resolver::{TokioResolver, net::NetError, proto::rr::RData};
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
@@ -23,7 +23,7 @@ use atrium_api::{
 };
 use atrium_common::resolver::Resolver;
 use atrium_identity::{
-    did::{CommonDidResolver, CommonDidResolverConfig, DEFAULT_PLC_DIRECTORY_URL},
+    did::{CommonDidResolver, CommonDidResolverConfig},
     handle::{AtprotoHandleResolver, AtprotoHandleResolverConfig, DnsTxtResolver},
 };
 use foyer::{
@@ -269,6 +269,7 @@ impl Identity {
         cache_dir: impl AsRef<Path>,
         memory_mb: usize,
         disk_gb: usize,
+        plc_directory_url: String,
     ) -> Result<Self, IdentityError> {
         let timeout_client = reqwest::Client::builder()
             .timeout(HTTP_TIMEOUT)
@@ -281,7 +282,7 @@ impl Identity {
             http_client: http_client.clone(),
         });
         let did_resolver = CommonDidResolver::new(CommonDidResolverConfig {
-            plc_directory_url: DEFAULT_PLC_DIRECTORY_URL.to_string(),
+            plc_directory_url,
             http_client: http_client.clone(),
         });
 
@@ -878,8 +879,8 @@ impl HttpClient for ReqwestHttpClient {
 pub struct HickoryDnsTxtResolver(TokioResolver);
 
 impl HickoryDnsTxtResolver {
-    fn new() -> Result<Self, ResolveError> {
-        Ok(Self(TokioResolver::builder_tokio()?.build()))
+    fn new() -> Result<Self, NetError> {
+        Ok(Self(TokioResolver::builder_tokio()?.build()?))
     }
 }
 
@@ -891,7 +892,13 @@ impl DnsTxtResolver for HickoryDnsTxtResolver {
         match self.0.txt_lookup(query).await {
             Ok(r) => {
                 metrics::counter!("whoami_resolve_dns_txt", "success" => "true").increment(1);
-                Ok(r.iter().map(|r| r.to_string()).collect())
+                Ok(r.answers()
+                    .iter()
+                    .filter_map(|record| match &record.data {
+                        RData::TXT(txt) => Some(txt.to_string()),
+                        _ => None,
+                    })
+                    .collect())
             }
             Err(e) => {
                 metrics::counter!("whoami_resolve_dns_txt", "success" => "false").increment(1);

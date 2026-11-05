@@ -2,7 +2,7 @@ pub mod consumer;
 pub mod server;
 pub mod storage;
 
-use links::CollectedLink;
+use microcosm_links::CollectedLink;
 use serde::{Deserialize, Serialize};
 use std::convert::From;
 
@@ -48,6 +48,21 @@ impl RecordId {
     pub fn rkey(&self) -> String {
         self.rkey.clone()
     }
+    pub fn uri(&self) -> String {
+        let RecordId {
+            did: Did(did),
+            collection,
+            rkey,
+        } = self;
+        format!("at://{did}/{collection}/{rkey}")
+    }
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManyToManyItem {
+    link_record: RecordId,
+    other_subject: String,
 }
 
 /// maybe the worst type in this repo, and there are some bad types

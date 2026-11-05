@@ -1,12 +1,13 @@
 use super::{
-    ActionableEvent, LinkReader, LinkStorage, Order, PagedAppendingCollection,
+    ActionableEvent, LinkReader, LinkStorage, ManyToManyCursor, Order, PagedAppendingCollection,
     PagedOrderedCollection, StorageStats,
 };
-use crate::{CountsByCount, Did, RecordId};
-use anyhow::{bail, Result};
+use crate::{CountsByCount, Did, ManyToManyItem, RecordId};
+
+use anyhow::{anyhow, bail, Result};
 use bincode::Options as BincodeOptions;
-use links::CollectedLink;
-use metrics::{counter, describe_counter, describe_histogram, histogram, Unit};
+use metrics::{counter, histogram};
+use microcosm_links::CollectedLink;
 use ratelimit::Ratelimiter;
 use rocksdb::backup::{BackupEngine, BackupEngineOptions};
 use rocksdb::{
@@ -14,6 +15,8 @@ use rocksdb::{
     MultiThreaded, Options, PrefixRange, ReadOptions, WriteBatch,
 };
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::marker::PhantomData;
@@ -24,7 +27,6 @@ use std::sync::{
 };
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio_util::sync::CancellationToken;
 
 static DID_IDS_CF: &str = "did_ids";
 static TARGET_IDS_CF: &str = "target_ids";
@@ -254,7 +256,6 @@ fn now() -> u64 {
 
 impl RocksStorage {
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        Self::describe_metrics();
         let me = RocksStorage::open_readmode(path, false)?;
         me.global_init()?;
         Ok(me)
@@ -306,105 +307,20 @@ impl RocksStorage {
     }
 
     fn global_init(&self) -> Result<()> {
-        let first_run = self.db.get(JETSTREAM_CURSOR_KEY)?.is_some();
-        if first_run {
+        if self.db.get(STARTED_AT_KEY)?.is_none() {
             self.db.put(STARTED_AT_KEY, _rv(now()))?;
-
-            // hack / temporary: if we're a new db, put in a completed repair
-            // state so we don't run repairs (repairs are for old-code dbs)
-            let completed = TargetIdRepairState {
-                id_when_started: 0,
-                current_us_started_at: 0,
-                latest_repaired_i: 0,
-            };
-            self.db.put(TARGET_ID_REPAIR_STATE_KEY, _rv(completed))?;
         }
         Ok(())
     }
 
-    pub fn run_repair(&self, breather: Duration, stay_alive: CancellationToken) -> Result<bool> {
-        let mut state = match self
-            .db
-            .get(TARGET_ID_REPAIR_STATE_KEY)?
-            .map(|s| _vr(&s))
-            .transpose()?
-        {
-            Some(s) => s,
-            None => TargetIdRepairState {
-                id_when_started: self.did_id_table.priv_id_seq,
-                current_us_started_at: now(),
-                latest_repaired_i: 0,
-            },
-        };
-
-        eprintln!("initial repair state: {state:?}");
-
-        let cf = self.db.cf_handle(TARGET_IDS_CF).unwrap();
-
-        let mut iter = self.db.raw_iterator_cf(&cf);
-        iter.seek_to_first();
-
-        eprintln!("repair iterator sent to first key");
-
-        // skip ahead if we're done some, or take a single first step
-        for _ in 0..state.latest_repaired_i {
-            iter.next();
+    pub fn reset_start(&self) -> Result<bool> {
+        let existing = self.db.get(STARTED_AT_KEY)?;
+        if existing.is_none() {
+            bail!("not resetting started-at key because one wasn't set");
         }
-
-        eprintln!(
-            "repair iterator skipped to {}th key",
-            state.latest_repaired_i
-        );
-
-        let mut maybe_done = false;
-
-        let mut write_fast = rocksdb::WriteOptions::default();
-        write_fast.set_sync(false);
-        write_fast.disable_wal(true);
-
-        while !stay_alive.is_cancelled() && !maybe_done {
-            // let mut batch = WriteBatch::default();
-
-            let mut any_written = false;
-
-            for _ in 0..1000 {
-                if state.latest_repaired_i % 1_000_000 == 0 {
-                    eprintln!("target iter at {}", state.latest_repaired_i);
-                }
-                state.latest_repaired_i += 1;
-
-                if !iter.valid() {
-                    eprintln!("invalid iter, are we done repairing?");
-                    maybe_done = true;
-                    break;
-                };
-
-                // eprintln!("iterator seems to be valid! getting the key...");
-                let raw_key = iter.key().unwrap();
-                if raw_key.len() == 8 {
-                    // eprintln!("found an 8-byte key, skipping it since it's probably an id...");
-                    iter.next();
-                    continue;
-                }
-                let target: TargetKey = _kr::<TargetKey>(raw_key)?;
-                let target_id: TargetId = _vr(iter.value().unwrap())?;
-
-                self.db
-                    .put_cf_opt(&cf, target_id.id().to_be_bytes(), _rv(&target), &write_fast)?;
-                any_written = true;
-                iter.next();
-            }
-
-            if any_written {
-                self.db
-                    .put(TARGET_ID_REPAIR_STATE_KEY, _rv(state.clone()))?;
-                std::thread::sleep(breather);
-            }
-        }
-
-        eprintln!("repair iterator done.");
-
-        Ok(false)
+        self.db.put(STARTED_AT_KEY, _rv(COZY_FIRST_CURSOR))?;
+        println!("started-at key reset to {COZY_FIRST_CURSOR}");
+        Ok(true)
     }
 
     pub fn start_backup(
@@ -501,29 +417,6 @@ impl RocksStorage {
             BackupEngine::open(&BackupEngineOptions::new(path)?, &rocksdb::Env::new()?)?;
         engine.purge_old_backups(num_backups_to_keep)?;
         Ok(())
-    }
-
-    fn describe_metrics() {
-        describe_histogram!(
-            "storage_rocksdb_read_seconds",
-            Unit::Seconds,
-            "duration of the read stage of actions"
-        );
-        describe_histogram!(
-            "storage_rocksdb_action_seconds",
-            Unit::Seconds,
-            "duration of read + write of actions"
-        );
-        describe_counter!(
-            "storage_rocksdb_batch_ops_total",
-            Unit::Count,
-            "total batched operations from actions"
-        );
-        describe_histogram!(
-            "storage_rocksdb_delete_account_ops",
-            Unit::Count,
-            "total batched ops for account deletions"
-        );
     }
 
     fn merge_op_extend_did_ids(
@@ -723,15 +616,25 @@ impl RocksStorage {
         );
         let mut record_link_targets = RecordLinkTargets::with_capacity(links.len());
 
+        // avoid double-id-interning (and dangling the first link target) if a
+        // record has multiple links from the same new (path + target)
+        let mut found_target_ids: HashMap<TargetKey, TargetId> = HashMap::new();
+
         for CollectedLink { target, path } in links {
             let target_key = TargetKey(
                 Target(target.clone().into_string()),
                 Collection(record_id.collection()),
                 RPath(path.clone()),
             );
-            let target_id =
-                self.target_id_table
+            let target_id = if let Some(id) = found_target_ids.get(&target_key) {
+                *id
+            } else {
+                let id = self
+                    .target_id_table
                     .get_or_create_id_val(&self.db, batch, &target_key)?;
+                found_target_ids.insert(target_key, id);
+                id
+            };
             self.merge_target_linker(batch, &target_id, &did_id, &RKey(record_id.rkey()));
 
             record_link_targets.add(RecordLinkTarget(RPath(path.clone()), target_id))
@@ -759,7 +662,14 @@ impl RocksStorage {
 
         // we do read -> modify -> write here: could merge-op in the deletes instead?
         // otherwise it's another single-thread-constraining thing.
+        let mut seen_targets = HashSet::new();
         for RecordLinkTarget(_, target_id) in record_link_targets.0 {
+            // if the record had multiple links to the target from the same
+            // path, remove_linker would already clear them all (to catch
+            // dups from multiple 'create' events).
+            if !seen_targets.insert(target_id.0) {
+                continue;
+            }
             self.update_target_linkers(batch, &target_id, |mut linkers| {
                 if linkers.0.is_empty() {
                     eprintln!("bug? linked target was missing when removing links");
@@ -825,6 +735,8 @@ impl RocksStorage {
 impl Drop for RocksStorage {
     fn drop(&mut self) {
         if self.is_writer {
+            // TODO: cloning a writer is possible and currently breaks things
+            // (constellation code currently doesn't/shouldn't clone the writer)
             println!("rocksdb writer: cleaning up for shutdown...");
             if let Err(e) = self.db.flush_wal(true) {
                 eprintln!("rocks: flushing wal failed: {e:?}");
@@ -943,7 +855,7 @@ impl LinkReader for RocksStorage {
         path_to_other: &str,
         limit: u64,
         after: Option<String>,
-        filter_dids: &HashSet<Did>,
+        filter_link_dids: &HashSet<Did>,
         filter_to_targets: &HashSet<String>,
     ) -> Result<PagedOrderedCollection<(String, u64, u64), String>> {
         let collection = Collection(collection.to_string());
@@ -959,11 +871,10 @@ impl LinkReader for RocksStorage {
         let after = after.map(|s| s.parse::<u64>().map(TargetId)).transpose()?;
 
         let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? else {
-            eprintln!("nothin doin for this target, {target_key:?}");
             return Ok(PagedOrderedCollection::empty());
         };
 
-        let filter_did_ids: HashMap<DidId, bool> = filter_dids
+        let filter_did_ids: HashMap<DidId, bool> = filter_link_dids
             .iter()
             .filter_map(|did| self.did_id_table.get_id_val(&self.db, did).transpose())
             .collect::<Result<Vec<DidIdValue>>>()?
@@ -1020,7 +931,6 @@ impl LinkReader for RocksStorage {
                 .take(1)
                 .next()
             else {
-                eprintln!("no forward match");
                 continue;
             };
 
@@ -1032,9 +942,9 @@ impl LinkReader for RocksStorage {
 
             // aand we can skip target ids that must be on future pages
             // (this check continues after the did-lookup, which we have to do)
-            let page_is_full = grouped_counts.len() as u64 >= limit;
+            let page_is_full = grouped_counts.len() as u64 > limit;
             if page_is_full {
-                let current_max = grouped_counts.keys().next_back().unwrap(); // limit should be non-zero bleh
+                let current_max = grouped_counts.keys().next_back().unwrap();
                 if fwd_target > *current_max {
                     continue;
                 }
@@ -1057,7 +967,7 @@ impl LinkReader for RocksStorage {
             // if we have a full page, and we're inserting a *new* key less than
             // the current max, then we can evict the current max
             let mut should_evict = false;
-            let entry = grouped_counts.entry(fwd_target.clone()).or_insert_with(|| {
+            let entry = grouped_counts.entry(fwd_target).or_insert_with(|| {
                 // this is a *new* key, so kick the max if we're full
                 should_evict = page_is_full;
                 Default::default()
@@ -1070,6 +980,18 @@ impl LinkReader for RocksStorage {
             }
         }
 
+        // If we accumulated more than limit groups, there's another page.
+        // Pop the extra before building items so it doesn't appear in results.
+        let next = if grouped_counts.len() as u64 > limit {
+            grouped_counts.pop_last();
+            grouped_counts
+                .keys()
+                .next_back()
+                .map(|k| format!("{}", k.0))
+        } else {
+            None
+        };
+
         let mut items: Vec<(String, u64, u64)> = Vec::with_capacity(grouped_counts.len());
         for (target_id, (n, dids)) in &grouped_counts {
             let Some(target) = self
@@ -1081,16 +1003,6 @@ impl LinkReader for RocksStorage {
             };
             items.push((target.0 .0, *n, dids.len() as u64));
         }
-
-        let next = if grouped_counts.len() as u64 >= limit {
-            // yeah.... it's a number saved as a string......sorry
-            grouped_counts
-                .keys()
-                .next_back()
-                .map(|k| format!("{}", k.0))
-        } else {
-            None
-        };
 
         Ok(PagedOrderedCollection { items, next })
     }
@@ -1120,6 +1032,173 @@ impl LinkReader for RocksStorage {
         } else {
             Ok(0)
         }
+    }
+
+    fn get_many_to_many(
+        &self,
+        target: &str,
+        collection: &str,
+        path: &str,
+        path_to_other: &str,
+        limit: u64,
+        after: Option<String>,
+        filter_link_dids: &HashSet<Did>,
+        filter_to_targets: &HashSet<String>,
+    ) -> Result<PagedOrderedCollection<ManyToManyItem, String>> {
+        // helper to resolve dids
+        let resolve_active_did = |did_id: &DidId| -> Result<Option<Did>> {
+            let Some(did) = self.did_id_table.get_val_from_id(&self.db, did_id.0)? else {
+                eprintln!("failed to look up did from did_id {did_id:?}");
+                return Ok(None);
+            };
+            let Some(DidIdValue(_, active)) = self.did_id_table.get_id_val(&self.db, &did)? else {
+                eprintln!("failed to look up did_value from did_id {did_id:?}: {did:?}: data consistency bug?");
+                return Ok(None);
+            };
+            Ok(active.then_some(did))
+        };
+
+        // setup variables that we need later
+        let collection = Collection(collection.to_string());
+        let path = RPath(path.to_string());
+
+        // extract parts form composite cursor
+        let cursor = match after {
+            Some(a) => {
+                let (b, f) = a.split_once(',').ok_or(anyhow!("invalid cursor format"))?;
+                let backlink_idx = b
+                    .parse::<u64>()
+                    .map_err(|e| anyhow!("invalid cursor.0: {e}"))?;
+                let other_link_idx = f
+                    .parse::<u64>()
+                    .map_err(|e| anyhow!("invalid cursor.1: {e}"))?;
+                Some(ManyToManyCursor {
+                    backlink_idx,
+                    other_link_idx,
+                })
+            }
+            None => None,
+        };
+
+        // (__active__) did ids and filter targets
+        let filter_did_ids: HashMap<DidId, bool> = filter_link_dids
+            .iter()
+            .filter_map(|did| self.did_id_table.get_id_val(&self.db, did).transpose())
+            .collect::<Result<Vec<DidIdValue>>>()?
+            .into_iter()
+            .map(|DidIdValue(id, active)| (id, active))
+            .collect();
+        let mut filter_to_target_ids: HashSet<TargetId> = HashSet::new();
+        for t in filter_to_targets {
+            for (_, target_id) in self.iter_targets_for_target(&Target(t.to_string())) {
+                filter_to_target_ids.insert(target_id);
+            }
+        }
+
+        let target_key = TargetKey(Target(target.to_string()), collection.clone(), path);
+        let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? else {
+            eprintln!("Target not found for {target_key:?}");
+            return Ok(PagedOrderedCollection::empty());
+        };
+        let linkers = self.get_target_linkers(&target_id)?;
+
+        let mut items: Vec<(usize, usize, ManyToManyItem)> = Vec::new();
+
+        // iterate backlinks (who linked to the target?)
+        for (backlink_idx, (did_id, rkey)) in
+            linkers
+                .0
+                .iter()
+                .enumerate()
+                .skip_while(|(backlink_idx, _)| {
+                    cursor.is_some_and(|c| *backlink_idx < c.backlink_idx as usize)
+                })
+        {
+            if did_id.is_empty()
+                || (!filter_did_ids.is_empty() && !filter_did_ids.contains_key(did_id))
+            {
+                continue;
+            }
+
+            let Some(links) = self.get_record_link_targets(&RecordLinkKey(
+                *did_id,
+                collection.clone(),
+                rkey.clone(),
+            ))?
+            else {
+                continue;
+            };
+
+            // iterate fwd links (which of these links point to the "other" target?)
+            for (other_link_idx, RecordLinkTarget(_, fwd_target_id)) in links
+                .0
+                .into_iter()
+                .enumerate()
+                .filter(|(_, RecordLinkTarget(rpath, target_id))| {
+                    rpath.0 == path_to_other
+                        && (filter_to_target_ids.is_empty()
+                            || filter_to_target_ids.contains(target_id))
+                })
+                .skip_while(|(other_link_idx, _)| {
+                    cursor.is_some_and(|c| {
+                        backlink_idx == c.backlink_idx as usize
+                            && *other_link_idx <= c.other_link_idx as usize
+                    })
+                })
+                .take(limit as usize + 1 - items.len())
+            {
+                // extract forward target did (target that links to the __other__ target)
+                let Some(did) = resolve_active_did(did_id)? else {
+                    continue;
+                };
+                // resolve to target string
+                let Some(fwd_target_key) = self
+                    .target_id_table
+                    .get_val_from_id(&self.db, fwd_target_id.0)?
+                else {
+                    continue;
+                };
+
+                // link to be added
+                let record_id = RecordId {
+                    did,
+                    collection: collection.0.clone(),
+                    rkey: rkey.0.clone(),
+                };
+                let item = ManyToManyItem {
+                    link_record: record_id,
+                    other_subject: fwd_target_key.0 .0,
+                };
+                items.push((backlink_idx, other_link_idx, item));
+            }
+
+            // page full - eject
+            if items.len() > limit as usize {
+                break;
+            }
+        }
+
+        // We collect up to limit + 1 fully-resolved items. If we got more than
+        // limit, there are more results beyond this page. We truncate to limit
+        // items (the actual page) and build a composite cursor from the last
+        // item on the page — a base64-encoded pair of (backlink_vec_idx,
+        // forward_link_idx). On the next request, skip_while advances past
+        // this position: backlinks before backlink_vec_idx are skipped entirely,
+        // and at backlink_vec_idx itself, forward links at or before
+        // forward_link_idx are skipped. This correctly resumes mid-record when
+        // a single backlinker has multiple forward links at path_to_other.
+        let next = (items.len() > limit as usize).then(|| {
+            let (b, o, _) = items[limit as usize - 1];
+            format!("{b},{o}")
+        });
+
+        let items = items
+            .into_iter()
+            .take(limit as usize)
+            .map(|(_, _, item)| item)
+            .collect();
+
+        Ok(PagedOrderedCollection { items, next })
     }
 
     fn get_links(
@@ -1460,27 +1539,33 @@ impl DidIdValue {
 }
 
 // target ids
-#[derive(Debug, Clone, Serialize, Deserialize, PartialOrd, Ord, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialOrd, Ord, PartialEq, Eq, Hash)]
 struct TargetId(u64); // key
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Target(pub String); // the actual target/uri
 
 // targets (uris, dids, etc.): the reverse index
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct TargetKey(pub Target, pub Collection, pub RPath);
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct TargetLinkers(pub Vec<(DidId, RKey)>);
 
 impl TargetLinkers {
+    /// remove every entry for this linking record.
+    ///
+    /// returns `false` if there were none
     fn remove_linker(&mut self, did: &DidId, rkey: &RKey) -> bool {
-        if let Some(entry) = self.0.iter_mut().rfind(|d| **d == (*did, rkey.clone())) {
+        // creates are not de-duplicated (eg. a record re-created with the same
+        // rkey after a missed delete), so a (did, rkey) can appear more than
+        // once. looping ensures we catch any potential duplicate.
+        let mut removed = false;
+        for entry in self.0.iter_mut().filter(|d| d.0 == *did && d.1 == *rkey) {
             *entry = (DidId::empty(), RKey::empty());
-            true
-        } else {
-            false
+            removed = true;
         }
+        removed
     }
     pub fn count(&self) -> (u64, u64) {
         // (linkers, deleted links)
@@ -1528,7 +1613,7 @@ impl RecordLinkTargets {
 mod tests {
     use super::super::ActionableEvent;
     use super::*;
-    use links::Link;
+    use microcosm_links::Link;
     use tempfile::tempdir;
 
     #[test]
@@ -1626,4 +1711,35 @@ mod tests {
     }
 
     // TODO: add tests for key prefixes actually prefixing (bincode encoding _should_...)
+
+    #[test]
+    fn rocks_started_at_persists_across_opens() -> Result<()> {
+        let dir = tempdir()?;
+
+        let mut store = RocksStorage::new(dir.path())?;
+        store.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "a.b.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("e.com".into()),
+                    path: ".uri".into(),
+                }],
+            },
+            0,
+        )?;
+        let first = store.get_stats()?.started_at;
+        drop(store);
+
+        std::thread::sleep(Duration::from_millis(5));
+
+        let store = RocksStorage::new(dir.path())?;
+        let second = store.get_stats()?.started_at;
+
+        assert_eq!(first, second, "STARTED_AT must not change across opens");
+        Ok(())
+    }
 }

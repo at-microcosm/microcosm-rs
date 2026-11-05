@@ -1,9 +1,12 @@
 use super::{
-    LinkReader, LinkStorage, Order, PagedAppendingCollection, PagedOrderedCollection, StorageStats,
+    LinkReader, LinkStorage, ManyToManyCursor, Order, PagedAppendingCollection,
+    PagedOrderedCollection, StorageStats,
 };
-use crate::{ActionableEvent, CountsByCount, Did, RecordId};
-use anyhow::Result;
-use links::CollectedLink;
+use crate::{ActionableEvent, CountsByCount, Did, ManyToManyItem, RecordId};
+
+use anyhow::{anyhow, Result};
+use microcosm_links::CollectedLink;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -13,6 +16,10 @@ pub struct MemStorage(Arc<Mutex<MemStorageData>>);
 
 type Linkers = Vec<Option<(Did, RKey)>>; // optional because we replace with None for deleted links to keep cursors stable
 
+/// simplified in-memory data model
+///
+/// constellation keeps forward links and backlinks, and should always have
+/// exactly one forward link for each backlink (and vice-versa).
 #[derive(Debug, Default)]
 struct MemStorageData {
     dids: HashMap<Did, bool>,                           // bool: active or nah
@@ -54,6 +61,7 @@ impl MemStorage {
         {
             let link_targets = link_targets.clone(); // satisfy borrowck
             for (record_path, target) in link_targets {
+                // creates aren't de-duplicated, so clear every entry for this record
                 data.targets
                     .get_mut(&target)
                     .expect("must have the target if we have a link saved")
@@ -197,9 +205,10 @@ impl LinkReader for MemStorage {
         items = items
             .into_iter()
             .skip_while(|(t, _, _)| after.as_ref().map(|a| t <= a).unwrap_or(false))
-            .take(limit as usize)
+            .take(limit as usize + 1)
             .collect();
-        let next = if items.len() as u64 >= limit {
+        let next = if items.len() as u64 > limit {
+            items.truncate(limit as usize);
             items.last().map(|(t, _, _)| t.clone())
         } else {
             None
@@ -232,6 +241,115 @@ impl LinkReader for MemStorage {
             .map(|(did, _)| did)
             .collect::<HashSet<_>>()
             .len() as u64)
+    }
+
+    fn get_many_to_many(
+        &self,
+        target: &str,
+        collection: &str,
+        path: &str,
+        path_to_other: &str,
+        limit: u64,
+        after: Option<String>,
+        filter_dids: &HashSet<Did>,
+        filter_targets: &HashSet<String>,
+    ) -> Result<PagedOrderedCollection<ManyToManyItem, String>> {
+        // setup variables that we need later
+        let path_to_other = RecordPath(path_to_other.to_string());
+        let filter_targets: HashSet<Target> =
+            HashSet::from_iter(filter_targets.iter().map(|s| Target::new(s)));
+
+        // extract parts form composite cursor
+        let cursor = match after {
+            Some(a) => {
+                let (b, o) = a.split_once(',').ok_or(anyhow!("invalid cursor format"))?;
+                let backlink_idx = b
+                    .parse::<u64>()
+                    .map_err(|e| anyhow!("invalid cursor.0: {e}"))?;
+                let other_link_idx = o
+                    .parse::<u64>()
+                    .map_err(|e| anyhow!("invalid cursor.1: {e}"))?;
+                Some(ManyToManyCursor {
+                    backlink_idx,
+                    other_link_idx,
+                })
+            }
+            None => None,
+        };
+
+        let data = self.0.lock().unwrap();
+        let Some(sources) = data.targets.get(&Target::new(target)) else {
+            return Ok(PagedOrderedCollection::empty());
+        };
+        let Some(linkers) = sources.get(&Source::new(collection, path)) else {
+            return Ok(PagedOrderedCollection::empty());
+        };
+
+        let mut items: Vec<(usize, usize, ManyToManyItem)> = Vec::new();
+
+        // iterate backwards (who linked to the target?)
+        for (backlink_idx, (did, rkey)) in linkers
+            .iter()
+            .enumerate()
+            .filter_map(|(i, opt)| opt.as_ref().map(|v| (i, v)))
+            .skip_while(|(backlink_idx, _)| {
+                cursor.is_some_and(|c| *backlink_idx < c.backlink_idx as usize)
+            })
+            .filter(|(_, (did, _))| filter_dids.is_empty() || filter_dids.contains(did))
+        {
+            let Some(links) = data.links.get(did).and_then(|m| {
+                m.get(&RepoId {
+                    collection: collection.to_string(),
+                    rkey: rkey.clone(),
+                })
+            }) else {
+                continue;
+            };
+
+            // iterate forward (which of these links point to the "other" target?)
+            for (other_link_idx, (_, fwd_target)) in links
+                .iter()
+                .enumerate()
+                .filter(|(_, (p, t))| {
+                    *p == path_to_other && (filter_targets.is_empty() || filter_targets.contains(t))
+                })
+                .skip_while(|(other_link_idx, _)| {
+                    cursor.is_some_and(|c| {
+                        backlink_idx == c.backlink_idx as usize
+                            && *other_link_idx <= c.other_link_idx as usize
+                    })
+                })
+                .take(limit as usize + 1 - items.len())
+            {
+                let item = ManyToManyItem {
+                    link_record: RecordId {
+                        did: did.clone(),
+                        collection: collection.to_string(),
+                        rkey: rkey.0.clone(),
+                    },
+                    other_subject: fwd_target.0.clone(),
+                };
+                items.push((backlink_idx, other_link_idx, item));
+            }
+
+            // page full - eject
+            if items.len() > limit as usize {
+                break;
+            }
+        }
+
+        let next = (items.len() > limit as usize).then(|| {
+            let (b, o, _) = items[limit as usize - 1];
+            format!("{b},{o}")
+        });
+
+        let items = items
+            .into_iter()
+            .take(limit as usize)
+            .map(|(_, _, item)| item)
+            .collect();
+
+        Ok(PagedOrderedCollection { items, next })
     }
 
     fn get_links(
@@ -396,8 +514,8 @@ impl LinkReader for MemStorage {
     ) -> Result<HashMap<String, HashMap<String, CountsByCount>>> {
         let data = self.0.lock().unwrap();
         let mut out: HashMap<String, HashMap<String, CountsByCount>> = HashMap::new();
-        if let Some(asdf) = data.targets.get(&Target::new(target)) {
-            for (Source { collection, path }, linkers) in asdf {
+        if let Some(source_linker_pairs) = data.targets.get(&Target::new(target)) {
+            for (Source { collection, path }, linkers) in source_linker_pairs {
                 let records = linkers.iter().flatten().count() as u64;
                 let distinct_dids = linkers
                     .iter()

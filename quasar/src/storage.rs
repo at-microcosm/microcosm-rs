@@ -1,4 +1,1 @@
-
-pub trait Storage {
-    
-}
+pub trait Storage {}

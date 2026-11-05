@@ -3,7 +3,7 @@ use axum::{
     extract::{Query, Request},
     http::{self, header},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Json, Response},
     routing::get,
     Router,
 };
@@ -18,12 +18,14 @@ use tokio::task::spawn_blocking;
 use tokio_util::sync::CancellationToken;
 
 use crate::storage::{LinkReader, Order, StorageStats};
-use crate::{CountsByCount, Did, RecordId};
+use crate::{CountsByCount, Did, ManyToManyItem, RecordId};
 
 mod acceptable;
 mod filters;
+mod link_source;
 
 use acceptable::{acceptable, ExtractAccept};
+use link_source::{parse_link_source, parse_path};
 
 const DEFAULT_CURSOR_LIMIT: u64 = 100;
 const DEFAULT_CURSOR_LIMIT_MAX: u64 = 1000;
@@ -37,12 +39,25 @@ fn to500(e: tokio::task::JoinError) -> http::StatusCode {
     http::StatusCode::INTERNAL_SERVER_ERROR
 }
 
-pub async fn serve<S, A>(store: S, addr: A, stay_alive: CancellationToken) -> anyhow::Result<()>
-where
-    S: LinkReader,
-    A: ToSocketAddrs,
-{
-    let app = Router::new()
+pub async fn serve<S: LinkReader, A: ToSocketAddrs>(
+    store: S,
+    addr: A,
+    did_web_domain: Option<String>,
+    stay_alive: CancellationToken,
+) -> anyhow::Result<()> {
+    let mut app = Router::new();
+
+    if let Some(d) = did_web_domain {
+        app = app.route(
+            "/.well-known/did.json",
+            get({
+                let domain = d.clone();
+                move || did_web(domain)
+            }),
+        )
+    }
+
+    let app = app
         .route("/robots.txt", get(robots))
         .route(
             "/",
@@ -101,6 +116,17 @@ where
             }),
         )
         .route(
+            "/xrpc/blue.microcosm.links.getManyToMany",
+            get({
+                let store = store.clone();
+                move |accept, query| async {
+                    spawn_blocking(|| get_many_to_many(accept, query, store))
+                        .await
+                        .map_err(to500)?
+                }
+            }),
+        )
+        .route(
             "/xrpc/blue.microcosm.links.getBacklinks",
             get({
                 let store = store.clone();
@@ -112,6 +138,7 @@ where
             }),
         )
         .route(
+            // deprecated
             "/links",
             get({
                 let store = store.clone();
@@ -122,6 +149,18 @@ where
                 }
             }),
         )
+        .route(
+            "/xrpc/blue.microcosm.links.getBacklinkDids",
+            get({
+                let store = store.clone();
+                move |accept, query| async {
+                    spawn_blocking(|| get_backlink_dids(accept, query, store))
+                        .await
+                        .map_err(to500)?
+                }
+            }),
+        )
+        // deprecated
         .route(
             "/links/distinct-dids",
             get({
@@ -145,6 +184,7 @@ where
                 }
             }),
         )
+        // deprecated
         .route(
             "/links/all",
             get({
@@ -204,7 +244,19 @@ async fn robots() -> &'static str {
 User-agent: *
 Disallow: /links
 Disallow: /links/
+Disallow: /xrpc/
     "
+}
+
+async fn did_web(domain: String) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "id": format!("did:web:{domain}"),
+        "service": [{
+            "id": "#constellation",
+            "type": "ConstellationGraphService",
+            "serviceEndpoint": format!("https://{domain}")
+        }]
+    }))
 }
 
 #[derive(Template, Serialize, Deserialize)]
@@ -242,6 +294,9 @@ struct GetManyToManyCountsQuery {
     /// path to the secondary link in the linking record
     path_to_other: String,
     /// filter to linking records (join of the m2m) by these DIDs
+    ///
+    /// TODO: this should be called `link_did`, deprecate + add an alias
+    /// TODO: should we have an `other_did` filter as well?
     #[serde(default)]
     did: Vec<String>,
     /// filter to specific secondary records
@@ -300,17 +355,16 @@ fn get_many_to_many_counts(
             .filter(|s| !s.is_empty()),
     );
 
-    let Some((collection, path)) = query.source.split_once(':') else {
-        return Err(http::StatusCode::BAD_REQUEST);
-    };
-    let path = format!(".{path}");
+    let (collection, path) =
+        parse_link_source(&query.source).map_err(|_| http::StatusCode::BAD_REQUEST)?; // TODO: better response errors!
 
-    let path_to_other = format!(".{}", query.path_to_other);
+    let path_to_other =
+        parse_path(&query.path_to_other).map_err(|_| http::StatusCode::BAD_REQUEST)?; // TODO: better response errors!
 
     let paged = store
         .get_many_to_many_counts(
             &query.subject,
-            collection,
+            &collection,
             &path,
             &path_to_other,
             limit,
@@ -389,12 +443,10 @@ fn get_backlink_counts(
     query: axum_extra::extract::Query<GetItemsCountQuery>,
     store: impl LinkReader,
 ) -> Result<impl IntoResponse, http::StatusCode> {
-    let Some((collection, path)) = query.source.split_once(':') else {
-        return Err(http::StatusCode::BAD_REQUEST);
-    };
-    let path = format!(".{path}");
+    let (collection, path) =
+        parse_link_source(&query.source).map_err(|_| http::StatusCode::BAD_REQUEST)?; // TODO: better response errors!
     let total = store
-        .get_count(&query.subject, collection, &path)
+        .get_count(&query.subject, &collection, &path)
         .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(acceptable(
@@ -498,10 +550,8 @@ fn get_backlinks(
             .map(|d| Did(d.to_string())),
     );
 
-    let Some((collection, path)) = query.source.split_once(':') else {
-        return Err(http::StatusCode::BAD_REQUEST);
-    };
-    let path = format!(".{path}");
+    let (collection, path) =
+        parse_link_source(&query.source).map_err(|_| http::StatusCode::BAD_REQUEST)?; // TODO: better response errors!
 
     let order = if query.reverse {
         Order::OldestToNewest
@@ -512,7 +562,7 @@ fn get_backlinks(
     let paged = store
         .get_links(
             &query.subject,
-            collection,
+            &collection,
             &path,
             order,
             limit,
@@ -636,6 +686,160 @@ fn get_links(
         GetLinkItemsResponse {
             total: paged.total,
             linking_records: paged.items,
+            cursor,
+            query: (*query).clone(),
+        },
+    ))
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GetManyToManyItemsQuery {
+    subject: String,
+    source: String,
+    /// path to the secondary link in the linking record
+    path_to_other: String,
+    /// filter to linking records (join of the m2m) by these DIDs
+    ///
+    /// TODO: should we have an `other_did` filter as well?
+    #[serde(default)]
+    link_did: Vec<String>,
+    /// filter to specific secondary records
+    #[serde(default)]
+    other_subject: Vec<String>,
+    cursor: Option<OpaqueApiCursor>,
+    #[serde(default = "get_default_cursor_limit")]
+    limit: u64,
+}
+#[derive(Template, Serialize)]
+#[template(path = "get-many-to-many.html.j2")]
+struct GetManyToManyItemsResponse {
+    items: Vec<ManyToManyItem>,
+    cursor: Option<OpaqueApiCursor>,
+    #[serde(skip_serializing)]
+    query: GetManyToManyItemsQuery,
+}
+fn get_many_to_many(
+    accept: ExtractAccept,
+    query: axum_extra::extract::Query<GetManyToManyItemsQuery>, // supports multiple param occurrences
+    store: impl LinkReader,
+) -> Result<impl IntoResponse, http::StatusCode> {
+    let after = query
+        .cursor
+        .clone()
+        .map(|oc| ApiKeyedCursor::try_from(oc).map_err(|_| http::StatusCode::BAD_REQUEST))
+        .transpose()?
+        .map(|c| c.next);
+
+    let limit = query.limit;
+    if limit > DEFAULT_CURSOR_LIMIT_MAX {
+        return Err(http::StatusCode::BAD_REQUEST);
+    }
+
+    let filter_dids: HashSet<Did> = query
+        .link_did
+        .iter()
+        .map(|d| d.trim())
+        .filter(|d| !d.is_empty())
+        .map(Did::from)
+        .collect();
+
+    let filter_other_subjects: HashSet<String> = HashSet::from_iter(
+        query
+            .other_subject
+            .iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+    );
+
+    let (collection, path) =
+        parse_link_source(&query.source).map_err(|_| http::StatusCode::BAD_REQUEST)?; // TODO: better response errors!
+
+    let path_to_other =
+        parse_path(&query.path_to_other).map_err(|_| http::StatusCode::BAD_REQUEST)?; // TODO: better response errors!
+
+    let paged = store
+        .get_many_to_many(
+            &query.subject,
+            &collection,
+            &path,
+            &path_to_other,
+            limit,
+            after,
+            &filter_dids,
+            &filter_other_subjects,
+        )
+        .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let cursor = paged.next.map(|next| ApiKeyedCursor { next }.into());
+
+    Ok(acceptable(
+        accept,
+        GetManyToManyItemsResponse {
+            items: paged.items,
+            cursor,
+            query: (*query).clone(),
+        },
+    ))
+}
+
+#[derive(Clone, Deserialize)]
+struct GetBacklinkDidsQuery {
+    subject: String,
+    source: String,
+    cursor: Option<OpaqueApiCursor>,
+    limit: Option<u64>,
+    // TODO: allow reverse (er, forward) order as well
+}
+#[derive(Template, Serialize)]
+#[template(path = "get-backlink-dids.html.j2")]
+struct GetBacklinkDidsResponse {
+    // what does staleness mean?
+    // - new links have appeared. would be nice to offer a `since` cursor to fetch these. and/or,
+    // - links have been deleted. hmm.
+    total: u64,
+    linking_dids: Vec<Did>,
+    cursor: Option<OpaqueApiCursor>,
+    #[serde(skip_serializing)]
+    query: GetBacklinkDidsQuery,
+}
+fn get_backlink_dids(
+    accept: ExtractAccept,
+    query: Query<GetBacklinkDidsQuery>,
+    store: impl LinkReader,
+) -> Result<impl IntoResponse, http::StatusCode> {
+    let until = query
+        .cursor
+        .clone()
+        .map(|oc| ApiCursor::try_from(oc).map_err(|_| http::StatusCode::BAD_REQUEST))
+        .transpose()?
+        .map(|c| c.next);
+
+    let limit = query.limit.unwrap_or(DEFAULT_CURSOR_LIMIT);
+    if limit > DEFAULT_CURSOR_LIMIT_MAX {
+        return Err(http::StatusCode::BAD_REQUEST);
+    }
+
+    let (collection, path) =
+        parse_link_source(&query.source).map_err(|_| http::StatusCode::BAD_REQUEST)?; // TODO: better response errors!
+
+    let paged = store
+        .get_distinct_dids(&query.subject, &collection, &path, limit, until)
+        .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let cursor = paged.next.map(|next| {
+        ApiCursor {
+            version: paged.version,
+            next,
+        }
+        .into()
+    });
+
+    Ok(acceptable(
+        accept,
+        GetBacklinkDidsResponse {
+            total: paged.total,
+            linking_dids: paged.items,
             cursor,
             query: (*query).clone(),
         },

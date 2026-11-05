@@ -1,0 +1,106 @@
+{
+	"lexicon": 1,
+	"id": "blue.microcosm.links.getManyToMany",
+	"defs": {
+		"main": {
+			"type": "query",
+			"description": "Get records that link out to both a primary and secondary subject",
+			"parameters": {
+				"type": "params",
+				"required": ["subject", "source", "pathToOther"],
+				"properties": {
+					"subject": {
+						"type": "string",
+						"format": "uri",
+						"description": "the primary target being linked to (at-uri, did, or uri)"
+					},
+					"source": {
+						"type": "string",
+						"description": "collection and path specification for the primary link (e.g., 'app.bsky.feed.like:subject.uri')"
+					},
+					"pathToOther": {
+						"type": "string",
+						"description": "path to the secondary link in the many-to-many record (e.g., 'otherThing.uri')"
+					},
+					"linkDid": {
+						"type": "array",
+						"description": "filter linking records from specific users",
+						"items": {
+							"type": "string",
+							"format": "did"
+						}
+					},
+					"otherSubject": {
+						"type": "array",
+						"description": "filter secondary links to specific subjects",
+						"items": {
+							"type": "string"
+						}
+					},
+					"limit": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 100,
+						"default": 16,
+						"description": "number of results to return"
+					}
+				}
+			},
+			"output": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": ["items"],
+					"properties": {
+						"items": {
+							"type": "array",
+							"items": {
+								"type": "ref",
+								"ref": "#item"
+							}
+						},
+						"cursor": {
+							"type": "string"
+						}
+					}
+				}
+			}
+		},
+		"item": {
+			"type": "object",
+			"required": ["linkRecord", "otherSubject"],
+			"properties": {
+				"linkRecord": {
+					"type": "ref",
+					"ref": "#linkRecord",
+					"description": "reference to the link record itself"
+				},
+				"otherSubject": {
+					"description": "the secondary subject from the link record",
+					"type": "string"
+				}
+			}
+		},
+		"linkRecord": {
+			"type": "object",
+			"required": ["did", "collection", "rkey"],
+			"description": "A record identifier consisting of a DID, collection, and record key",
+			"properties": {
+				"did": {
+					"type": "string",
+					"format": "did",
+					"description": "the DID of the linking record's repository"
+				},
+				"collection": {
+					"type": "string",
+					"format": "nsid",
+					"description": "the collection of the linking record"
+				},
+				"rkey": {
+					"type": "string",
+					"format": "record-key"
+				}
+			}
+		}
+	}
+}

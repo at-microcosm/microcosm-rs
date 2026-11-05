@@ -1,0 +1,57 @@
+{
+  "$type": "com.atproto.lexicon.schema",
+  "id": "blue.microcosm.identity.resolveMiniDoc",
+  "lexicon": 1,
+  "defs": {
+    "main": {
+      "description": "like com.atproto.identity.resolveIdentity but instead of the full DID Doc, returns an atproto-relevant subset",
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "properties": {
+            "did": {
+              "description": "DID, bi-directionally verified if a handle was provided in the query",
+              "format": "did",
+              "type": "string"
+            },
+            "handle": {
+              "description": "the validated handle of the account or 'handle.invalid' if the handle did not bi-directionally match the DID document",
+              "format": "handle",
+              "type": "string"
+            },
+            "pds": {
+              "description": "the identity's PDS URL",
+              "format": "uri",
+              "type": "string"
+            },
+            "signing_key": {
+              "description": "the atproto signing key publicKeyMultibase",
+              "type": "string"
+            }
+          },
+          "required": [
+            "did",
+            "handle",
+            "pds",
+            "signing_key"
+          ],
+          "type": "object"
+        }
+      },
+      "parameters": {
+        "properties": {
+          "identifier": {
+            "description": "handle or DID to resolve",
+            "format": "at-identifier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "identifier"
+        ],
+        "type": "params"
+      },
+      "type": "query"
+    }
+  }
+}

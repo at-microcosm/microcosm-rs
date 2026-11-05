@@ -12,7 +12,7 @@
 // use constellation::storage::RocksStorage;
 // use constellation::Did;
 
-// use links::parse_any_link;
+// use microcosm_links::parse_any_link;
 // use rocksdb::IteratorMode;
 // use std::time;
 

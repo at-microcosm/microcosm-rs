@@ -1,0 +1,56 @@
+# Mostly used as an example to show how to run microcosm-rs projects via Docker Compose.
+# Change as needed
+services:
+  constellation:
+    build:
+      context: .
+      dockerfile: ./constellation/Dockerfile
+    container_name: constellation
+    ports:
+      - "6789:6789" # link query HTTP API
+      - "8765:8765" # prometheus metrics
+    # Saves directly to a folder on disk
+    volumes:
+      - ./constellation-data:/data
+    command:
+      - "--jetstream"
+      - "us-east-1"
+      - "--backend"
+      - "rocks"
+      - "--data"
+      - "/data"
+      - "--bind"
+      - "0.0.0.0:6789"
+      - "--collect-metrics"
+      - "--bind-metrics"
+      - "0.0.0.0:8765"
+    restart: unless-stopped
+
+  slingshot:
+    build:
+      context: .
+      dockerfile: ./slingshot/Dockerfile
+    container_name: slingshot
+    environment:
+      - RUST_LOG=info
+    ports:
+      - "8080:8080" # HTTP / XRPC API
+      - "8766:8765" # prometheus metrics (host 8766 to avoid clashing with constellation's 8765)
+    # Saves caches directly to a folder on disk
+    volumes:
+      - ./slingshot-data:/data
+    command:
+      - "--jetstream"
+      - "us-east-1"
+      - "--cache-dir"
+      - "/data"
+      - "--bind"
+      - "0.0.0.0:8080"
+      - "--collect-metrics"
+      - "--bind-metrics"
+      - "0.0.0.0:8765"
+    restart: unless-stopped
+
+volumes:
+  constellation-data:
+  slingshot-data:
